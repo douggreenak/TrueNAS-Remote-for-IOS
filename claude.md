@@ -380,39 +380,51 @@ TrueNAS Remote/
 
 ### Phase 1 — Architecture & Navigation
 - [x] Old 4-tab structure
-- [ ] Migrate to 9-tab adaptive navigation
-- [ ] Create all model files
-- [ ] Split NetworkManager into domain extensions
+- [x] Migrate to 9-tab adaptive navigation
+- [x] Create all model files (16 model files)
+- [x] Split NetworkManager into domain extensions (9 networking files)
 
 ### Phase 2 — Dashboard & Reporting
-- [ ] Dashboard v2 (full metrics)
-- [ ] Reporting charts (8 chart types, time range picker)
+- [x] Dashboard v2 (full metrics — system card, CPU/RAM rings, network chart, pool health, temperature)
+- [x] Reporting charts (7 chart types: CPU, Load, Memory, Network, ARC, Temperature, Disk I/O)
+- [x] Time range selector (1h / 24h / 7d) with live refresh
 
 ### Phase 3 — Storage & Datasets
-- [ ] StorageRootView (Pools / Disks / Datasets segmented)
-- [ ] Pool list, pool detail, VDEV tree
-- [ ] Disk list + S.M.A.R.T.
-- [ ] Dataset tree + snapshots
+- [x] StorageRootView (Pools / Disks / Datasets segmented with lazy loading)
+- [x] Pool list with health badge + capacity bar; pool detail with VDEV tree
+- [x] Disk list + disk detail with S.M.A.R.T. test runner
+- [x] Dataset tree (hierarchical) + dataset detail with snapshot create/delete/rollback
+- [x] Snapshot list per dataset with swipe actions
 
 ### Phase 4 — Network & Shares
-- [ ] Network interfaces list + detail
-- [ ] Global config view
-- [ ] SMB / NFS / iSCSI shares views
+- [x] Network interfaces list with live traffic sparklines + interface detail chart
+- [x] Global config view (hostname, gateways, DNS, proxy)
+- [x] Static routes list
+- [x] SMB / NFS / iSCSI shares views with enable/disable toggle
 
 ### Phase 5 — Data Protection
-- [ ] Snapshot tasks, replication, cloud sync, rsync, scrub
+- [x] Snapshot tasks, replication, cloud sync, rsync, scrub (all 5 types)
+- [x] Run now buttons + status badges + progress for scrub
 
 ### Phase 6 — Services, VMs, Apps
-- [ ] Services (full list), VMs (actions), Apps (list + control)
+- [x] Services (grouped Running/Stopped with search), VMs, Apps (all 3 in ServicesView)
+- [x] Swipe actions + context menus for start/stop/restart
+- [x] Searchable services list
 
 ### Phase 7 — System
-- [ ] Alerts, Update, Boot Envs, Users/Groups, Certificates, Audit Log
+- [x] Alerts (active + dismissed) with swipe-to-dismiss
+- [x] Boot Environments with activate button
+- [x] Users & Groups list
+- [x] Certificates with days-to-expiry color coding
+- [x] Audit Log with search + service filter
+- [x] Update tab with version info and update available banner
 
 ### All Builds — iPhone 17 Simulator
-- [ ] Build clean after Phase 1
-- [ ] Build clean after Phase 2
-- [ ] Build clean after Phase 3
-- [ ] Build clean after Phase 4
-- [ ] Build clean after Phase 5
-- [ ] Build clean after Phase 6
-- [ ] Build clean after Phase 7
+- [x] Build clean after Phase 1
+- [x] Build clean after Phase 2
+- [x] Build clean after Phase 3
+- [x] Build clean after Phase 4
+- [x] Build clean after Phase 5
+- [x] Build clean after Phase 6
+- [x] Build clean after Phase 7
+- [x] Final clean build — BUILD SUCCEEDED (2026-05-23)

@@ -159,10 +159,7 @@ struct SystemView: View {
 
     // MARK: - Audit Log
     private var auditView: some View {
-        List(vm.auditLog) { entry in
-            AuditRow(entry: entry)
-        }
-        .listStyle(.insetGrouped)
+        AuditLogView(entries: vm.auditLog)
     }
 
     // MARK: - Update
@@ -401,6 +398,68 @@ private struct AuditRow: View {
             Text(entry.relativeTime).font(.caption2).foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Searchable Audit Log View
+private struct AuditLogView: View {
+    let entries: [AuditEntry]
+    @State private var searchText = ""
+    @State private var filterService = "All"
+
+    private var services: [String] {
+        let all = ["All"] + Array(Set(entries.map(\.service))).sorted()
+        return all
+    }
+
+    private var filtered: [AuditEntry] {
+        entries.filter { entry in
+            let matchesSearch = searchText.isEmpty ||
+                entry.username.localizedCaseInsensitiveContains(searchText) ||
+                entry.event.localizedCaseInsensitiveContains(searchText) ||
+                entry.address.localizedCaseInsensitiveContains(searchText)
+            let matchesService = filterService == "All" || entry.service == filterService
+            return matchesSearch && matchesService
+        }
+    }
+
+    var body: some View {
+        List {
+            // Service filter
+            if !entries.isEmpty {
+                Section {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(services, id: \.self) { svc in
+                                Button {
+                                    filterService = svc
+                                } label: {
+                                    Text(svc)
+                                        .font(.caption.weight(filterService == svc ? .semibold : .regular))
+                                        .foregroundStyle(filterService == svc ? .white : .primary)
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(filterService == svc ? Color.accentColor : Color.secondary.opacity(0.15),
+                                                    in: Capsule())
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+
+            Section("\(filtered.count) events") {
+                if filtered.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                } else {
+                    ForEach(filtered) { entry in
+                        AuditRow(entry: entry)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .searchable(text: $searchText, prompt: "Search by user, event, address…")
     }
 }
 

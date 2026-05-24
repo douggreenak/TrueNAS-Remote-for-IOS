@@ -4,6 +4,7 @@ struct StorageRootView: View {
     @Environment(StorageViewModel.self)  private var vm
     @Environment(SettingsViewModel.self) private var settings
     @State private var segment = 0   // 0=Pools 1=Disks 2=Datasets
+    @State private var diskSearch = ""
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,10 @@ struct StorageRootView: View {
                     await vm.refresh()
                 }
             }
+            .task(id: segment) {
+                // Load datasets lazily when that segment is selected
+                if segment == 2 { await vm.refreshDatasets() }
+            }
             .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
                 Button("OK") { vm.errorMessage = nil }
             } message: { Text(vm.errorMessage ?? "") }
@@ -64,21 +69,31 @@ struct StorageRootView: View {
     }
 
     // MARK: - Disks
+    private var filteredDisks: [Disk] {
+        diskSearch.isEmpty ? vm.disks :
+        vm.disks.filter { $0.id.localizedCaseInsensitiveContains(diskSearch) ||
+                          $0.model.localizedCaseInsensitiveContains(diskSearch) ||
+                          $0.serial.localizedCaseInsensitiveContains(diskSearch) ||
+                          ($0.poolName ?? "").localizedCaseInsensitiveContains(diskSearch) }
+    }
+
     private var disksList: some View {
-        Group {
+        List {
             if vm.disks.isEmpty {
-                ContentUnavailableView("No Disks", systemImage: "internaldrive",
-                    description: Text("No disk data available."))
+                Text("No disk data available.").foregroundStyle(.secondary)
+            } else if filteredDisks.isEmpty {
+                ContentUnavailableView.search(text: diskSearch)
             } else {
-                List(vm.disks) { disk in
+                ForEach(filteredDisks) { disk in
                     NavigationLink(destination: DiskDetailView(disk: disk)) {
                         DiskListRow(disk: disk)
                     }
                 }
-                .listStyle(.insetGrouped)
-                .refreshable { await vm.refresh() }
             }
         }
+        .listStyle(.insetGrouped)
+        .refreshable { await vm.refresh() }
+        .searchable(text: $diskSearch, prompt: "Search by device, model, serial, pool…")
     }
 
     // MARK: - Datasets

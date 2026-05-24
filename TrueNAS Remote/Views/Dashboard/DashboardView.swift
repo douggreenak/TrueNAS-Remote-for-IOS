@@ -175,7 +175,10 @@ struct DashboardView: View {
                 Text("No pools").font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(storage.pools) { pool in
-                    poolMiniCard(pool)
+                    NavigationLink(destination: PoolDetailView(pool: pool)) {
+                        poolMiniCard(pool)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -184,10 +187,12 @@ struct DashboardView: View {
     private func poolMiniCard(_ pool: StoragePool) -> some View {
         HStack(spacing: 12) {
             Image(systemName: pool.status.icon).foregroundStyle(pool.status.color)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(pool.name).font(.subheadline.weight(.medium))
                     Spacer()
+                    HealthBadge(status: pool.status)
                     Text(String(format: "%.0f%%", pool.usedFraction * 100))
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
@@ -198,6 +203,7 @@ struct DashboardView: View {
                     Text(pool.formattedTotal).font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))

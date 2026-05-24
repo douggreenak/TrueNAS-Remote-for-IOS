@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 
+
 struct NetworkView: View {
     @Environment(NetworkViewModel.self)  private var vm
     @Environment(SettingsViewModel.self) private var settings
@@ -130,19 +131,24 @@ struct InterfaceRow: View {
                     .font(.system(size: 16))
             }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(interface.name).font(.body.weight(.medium))
                     Text(interface.type.label)
                         .font(.caption2.bold())
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: Capsule())
+                    if !interface.linkState {
+                        Text("Down").font(.caption2.bold()).foregroundStyle(.red)
+                    }
                 }
                 if let ip = interface.ipv4Addresses.first {
                     Text(ip).font(.caption.monospaced()).foregroundStyle(.secondary)
+                } else if !interface.linkState {
+                    Text("No link").font(.caption).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 10) {
-                    if interface.inBytesPerSec > 0 || interface.outBytesPerSec > 0 {
+                if interface.linkState {
+                    HStack(spacing: 10) {
                         Label(formatBps(interface.inBytesPerSec), systemImage: "arrow.down")
                             .font(.caption2).foregroundStyle(.blue)
                         Label(formatBps(interface.outBytesPerSec), systemImage: "arrow.up")
@@ -150,8 +156,16 @@ struct InterfaceRow: View {
                     }
                 }
             }
+
+            Spacer()
+
+            // Mini sparkline for active interfaces
+            if interface.linkState && interface.trafficHistory.count > 2 {
+                NetSparkline(samples: interface.trafficHistory)
+                    .frame(width: 60, height: 28)
+            }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     private var typeIcon: String {
@@ -169,6 +183,25 @@ struct InterfaceRow: View {
         if mbps >= 1000 { return String(format: "%.1f Gbps", mbps / 1000) }
         if mbps >= 1 { return String(format: "%.1f Mbps", mbps) }
         return String(format: "%.0f Kbps", bps / 1000)
+    }
+}
+
+// MARK: - Net Sparkline
+private struct NetSparkline: View {
+    let samples: [TrafficSample]
+    var body: some View {
+        Chart {
+            ForEach(Array(samples.enumerated()), id: \.offset) { i, s in
+                AreaMark(x: .value("t", i), y: .value("in", s.inBytes / 1_000_000))
+                    .foregroundStyle(LinearGradient(colors: [.blue.opacity(0.4), .blue.opacity(0)], startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.catmullRom)
+                LineMark(x: .value("t", i), y: .value("in", s.inBytes / 1_000_000))
+                    .foregroundStyle(.blue)
+                    .interpolationMethod(.catmullRom)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
     }
 }
 

@@ -4,6 +4,7 @@ struct ServicesView: View {
     @Environment(ServicesViewModel.self)  private var vm
     @Environment(SettingsViewModel.self)  private var settings
     @State private var segment = 0   // 0=Services 1=VMs 2=Apps
+    @State private var searchText = ""
 
     var body: some View {
         NavigationStack {
@@ -45,14 +46,38 @@ struct ServicesView: View {
     }
 
     // MARK: - Services List
+    private var filteredServices: [SystemService] {
+        searchText.isEmpty ? vm.services :
+        vm.services.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) ||
+                              $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
     private var servicesList: some View {
-        List(vm.services) { svc in
-            ServiceRow(service: svc) { action in
-                Task { await vm.controlService(svc, action: action) }
+        List {
+            let running = filteredServices.filter { $0.state == .running }
+            let stopped = filteredServices.filter { $0.state != .running }
+            if !running.isEmpty {
+                Section("Running (\(running.count))") {
+                    ForEach(running) { svc in
+                        ServiceRow(service: svc) { action in
+                            Task { await vm.controlService(svc, action: action) }
+                        }
+                    }
+                }
+            }
+            if !stopped.isEmpty {
+                Section("Stopped (\(stopped.count))") {
+                    ForEach(stopped) { svc in
+                        ServiceRow(service: svc) { action in
+                            Task { await vm.controlService(svc, action: action) }
+                        }
+                    }
+                }
             }
         }
         .listStyle(.insetGrouped)
         .refreshable { await vm.refresh() }
+        .searchable(text: $searchText, prompt: "Search services…")
     }
 
     // MARK: - VMs List
@@ -63,6 +88,7 @@ struct ServicesView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .refreshable { await vm.refresh() }
     }
 
     // MARK: - Apps List
@@ -73,6 +99,7 @@ struct ServicesView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .refreshable { await vm.refresh() }
     }
 }
 
