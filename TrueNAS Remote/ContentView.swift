@@ -1,24 +1,7 @@
-//
-//  ContentView.swift
-//  TrueNAS Remote
-//
-//  Created by Doug Green on 5/23/26.
-//
-
+// ContentView is superseded by MainTabView. Kept to avoid
+// breaking any open-in-Xcode previews that reference it.
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
-
-#Preview {
-    ContentView()
+    var body: some View { EmptyView() }
 }
