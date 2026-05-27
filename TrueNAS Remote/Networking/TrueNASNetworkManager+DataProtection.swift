@@ -2,6 +2,27 @@ import Foundation
 
 extension TrueNASNetworkManager {
 
+    // MARK: - BSON Date helper
+    /// Decodes {"$date": ms} BSON wrapper used by TrueNAS task state timestamps.
+    private struct TaskBSONDate: Decodable {
+        let date: Date?
+        private enum CodingKeys: String, CodingKey { case ms = "$date" }
+        init(from decoder: Decoder) throws {
+            if let c = try? decoder.container(keyedBy: CodingKeys.self),
+               let ms = (try? c.decode(Double.self, forKey: .ms))
+                     ?? (try? c.decode(Int64.self, forKey: .ms)).map(Double.init) {
+                date = Date(timeIntervalSince1970: ms / 1000)
+                return
+            }
+            if let svc = try? decoder.singleValueContainer(),
+               let ts  = try? svc.decode(Double.self) {
+                date = Date(timeIntervalSince1970: ts)
+                return
+            }
+            date = nil
+        }
+    }
+
     // MARK: - Snapshot Tasks
     func fetchSnapshotTasks() async throws -> [SnapshotTask] {
         struct Raw: Decodable {
@@ -9,9 +30,12 @@ extension TrueNASNetworkManager {
             let lifetime_value: Int?; let lifetime_unit: String?
             let enabled: Bool?
             let schedule: ScheduleRaw?
-            struct ScheduleRaw: Decodable { let minute: String?; let hour: String?; let dom: String?; let month: String?; let dow: String? }
+            struct ScheduleRaw: Decodable {
+                let minute: String?; let hour: String?
+                let dom: String?; let month: String?; let dow: String?
+            }
         }
-        let raws = try await get("/api/v2.0/pool/snapshottask", as: [Raw].self)
+        let raws = try await call(method: "pool.snapshottask.query", as: [Raw].self)
         return raws.map { r in
             let life = "\(r.lifetime_value ?? 2) \(r.lifetime_unit ?? "WEEKS")"
             return SnapshotTask(id: r.id, dataset: r.dataset,
@@ -24,7 +48,8 @@ extension TrueNASNetworkManager {
     }
 
     func runSnapshotTask(id: Int) async throws {
-        try await post("/api/v2.0/pool/snapshottask/id/\(id)/run")
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "pool.snapshottask.run", params: params)
     }
 
     // MARK: - Replication Tasks
@@ -36,9 +61,9 @@ extension TrueNASNetworkManager {
             let schedule: ScheduleRaw?; let enabled: Bool?
             let state: StateRaw?
             struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
-            struct StateRaw: Decodable { let state: String?; let datetime: Double? }
+            struct StateRaw: Decodable { let state: String?; let datetime: TaskBSONDate? }
         }
-        let raws = try await get("/api/v2.0/replication", as: [Raw].self)
+        let raws = try await call(method: "replication.query", as: [Raw].self)
         return raws.map { r in
             ReplicationTask(
                 id: r.id, name: r.name,
@@ -49,13 +74,14 @@ extension TrueNASNetworkManager {
                 schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
                 enabled: r.enabled ?? true,
                 lastRunStatus: TaskRunStatus(rawValue: r.state?.state ?? "") ?? .unknown,
-                lastRun: r.state?.datetime.map { Date(timeIntervalSince1970: $0) }
+                lastRun: r.state?.datetime?.date
             )
         }
     }
 
     func runReplicationTask(id: Int) async throws {
-        try await post("/api/v2.0/replication/id/\(id)/run")
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "replication.run", params: params)
     }
 
     // MARK: - Cloud Sync Tasks
@@ -65,11 +91,11 @@ extension TrueNASNetworkManager {
             let path: String?; let credentials: CredsRaw?
             let schedule: ScheduleRaw?; let enabled: Bool?
             let job: JobRaw?
-            struct CredsRaw: Decodable { let name: String?; let provider: String? }
+            struct CredsRaw: Decodable { let name: String? }
             struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
-            struct JobRaw: Decodable { let state: String?; let timeStarted: Double? }
+            struct JobRaw: Decodable { let state: String?; let timeStarted: TaskBSONDate? }
         }
-        return try await get("/api/v2.0/cloudsync", as: [Raw].self).map { r in
+        return try await call(method: "cloudsync.query", as: [Raw].self).map { r in
             CloudSyncTask(
                 id: r.id, description: r.description ?? "Cloud Sync \(r.id)",
                 direction: r.direction ?? "PUSH", path: r.path ?? "—",
@@ -77,14 +103,15 @@ extension TrueNASNetworkManager {
                 schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
                 enabled: r.enabled ?? true,
                 lastRunStatus: TaskRunStatus(rawValue: r.job?.state ?? "") ?? .unknown,
-                lastRun: r.job?.timeStarted.map { Date(timeIntervalSince1970: $0) },
+                lastRun: r.job?.timeStarted?.date,
                 bytesTransferred: nil
             )
         }
     }
 
     func runCloudSyncTask(id: Int) async throws {
-        try await post("/api/v2.0/cloudsync/id/\(id)/run")
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "cloudsync.run", params: params)
     }
 
     // MARK: - Rsync Tasks
@@ -94,32 +121,44 @@ extension TrueNASNetworkManager {
             let remoteport: Int?; let remotepath: String?; let direction: String?
             let schedule: ScheduleRaw?; let enabled: Bool?; let job: JobRaw?
             struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
-            struct JobRaw: Decodable { let state: String?; let timeStarted: Double? }
+            struct JobRaw: Decodable { let state: String?; let timeStarted: TaskBSONDate? }
         }
-        return try await get("/api/v2.0/rsynctask", as: [Raw].self).map { r in
+        return try await call(method: "rsynctask.query", as: [Raw].self).map { r in
             RsyncTask(id: r.id, path: r.path ?? "—", remoteHost: r.remotehost ?? "—",
                       remotePort: r.remoteport ?? 22, remotePath: r.remotepath ?? "—",
                       direction: r.direction ?? "PUSH",
                       schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
                       enabled: r.enabled ?? true,
                       lastRunStatus: TaskRunStatus(rawValue: r.job?.state ?? "") ?? .unknown,
-                      lastRun: r.job?.timeStarted.map { Date(timeIntervalSince1970: $0) })
+                      lastRun: r.job?.timeStarted?.date)
         }
     }
 
     func runRsyncTask(id: Int) async throws {
-        try await post("/api/v2.0/rsynctask/id/\(id)/run")
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "rsynctask.run", params: params)
     }
 
     // MARK: - Scrub Tasks
     func fetchScrubTasks() async throws -> [ScrubTask] {
         struct Raw: Decodable {
-            let id: Int; let pool: String?; let enabled: Bool?
+            let id: Int
+            let pool: AnyCodable?       // Int in 25.x, String in older versions
+            let poolName: String?
+            let enabled: Bool?
             let threshold: Int?; let schedule: ScheduleRaw?
             struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
         }
-        return try await get("/api/v2.0/pool/scrub", as: [Raw].self).map { r in
-            ScrubTask(id: r.id, poolName: r.pool ?? "—",
+        return try await call(method: "pool.scrub.query", as: [Raw].self).map { r in
+            let name: String = {
+                if let s = r.poolName, !s.isEmpty { return s }
+                switch r.pool?.value {
+                case let i as Int:    return "Pool \(i)"
+                case let s as String: return s
+                default:              return "—"
+                }
+            }()
+            return ScrubTask(id: r.id, poolName: name,
                       schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
                       enabled: r.enabled ?? true, threshold: r.threshold ?? 35,
                       lastRun: nil, lastRunDuration: nil,
@@ -130,8 +169,8 @@ extension TrueNASNetworkManager {
     // MARK: - Schedule helper
     private func scheduleString(_ hour: String?, _ minute: String?) -> String {
         guard let h = hour, let m = minute else { return "—" }
-        if h == "*" && m == "*"    { return "Every minute" }
-        if h == "*"                { return "Every hour at :\(m)" }
+        if h == "*" && m == "*" { return "Every minute" }
+        if h == "*"             { return "Every hour at :\(m)" }
         let hInt = Int(h) ?? 0
         let mPad = m.count == 1 ? "0\(m)" : m
         let ampm = hInt >= 12 ? "PM" : "AM"

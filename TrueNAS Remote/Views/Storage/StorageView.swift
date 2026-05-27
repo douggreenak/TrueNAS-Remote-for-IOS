@@ -21,7 +21,7 @@ struct StorageView: View {
                     if viewModel.isLoading {
                         ProgressView()
                     } else {
-                        Button("", systemImage: "arrow.clockwise") {
+                        Button("Refresh", systemImage: "arrow.clockwise") {
                             Task { await viewModel.refresh() }
                         }
                     }
@@ -73,19 +73,7 @@ struct StorageView: View {
 
             // Capacity bar
             VStack(alignment: .leading, spacing: 4) {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.2))
-                            .frame(height: 8)
-                        Capsule()
-                            .fill(capacityColor(pool.usedFraction))
-                            .frame(width: geo.size.width * pool.usedFraction, height: 8)
-                            .animation(.easeInOut, value: pool.usedFraction)
-                    }
-                }
-                .frame(height: 8)
-
+                CapacityBar(fraction: pool.usedFraction)
                 HStack {
                     Text("\(pool.formattedUsed) used")
                     Spacer()
@@ -96,12 +84,6 @@ struct StorageView: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    private func capacityColor(_ fraction: Double) -> Color {
-        if fraction >= 0.9 { return .red }
-        if fraction >= 0.75 { return .orange }
-        return .blue
     }
 }
 

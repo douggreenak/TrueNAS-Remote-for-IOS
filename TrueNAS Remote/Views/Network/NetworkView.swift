@@ -8,50 +8,58 @@ struct NetworkView: View {
     @State private var segment = 0   // 0=Interfaces 1=Config 2=Routes
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Section", selection: $segment) {
-                    Text("Interfaces").tag(0)
-                    Text("Config").tag(1)
-                    Text("Routes").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal).padding(.vertical, 8)
+        VStack(spacing: 0) {
+            Picker("Section", selection: $segment) {
+                Text("Interfaces").tag(0)
+                Text("Config").tag(1)
+                Text("Routes").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal).padding(.vertical, 8)
 
-                Group {
-                    switch segment {
-                    case 0: interfacesList
-                    case 1: configView
-                    default: routesList
-                    }
+            Group {
+                switch segment {
+                case 0: interfacesList
+                case 1: configView
+                default: routesList
                 }
             }
-            .navigationTitle("Network")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if vm.isLoading { ProgressView().controlSize(.small) }
-                    else { Button("", systemImage: "arrow.clockwise") { Task { await vm.refresh() } } }
-                }
+        }
+        .navigationTitle("Network")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if vm.isLoading { ProgressView().controlSize(.small) }
             }
-            .task(id: settings.refreshInterval) {
+        }
+        .task(id: settings.refreshInterval) {
+            await vm.refresh()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(settings.refreshInterval))
                 await vm.refresh()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                    await vm.refresh()
-                }
             }
         }
     }
 
     // MARK: - Interfaces
     private var interfacesList: some View {
-        List(vm.interfaces) { iface in
-            NavigationLink(destination: InterfaceDetailView(interface: iface)) {
-                InterfaceRow(interface: iface)
+        Group {
+            if vm.isLoading && vm.interfaces.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.interfaces.isEmpty {
+                ContentUnavailableView("No Interfaces",
+                    systemImage: "network.slash",
+                    description: Text("No network interfaces found."))
+            } else {
+                List(vm.interfaces) { iface in
+                    NavigationLink(destination: InterfaceDetailView(interface: iface)) {
+                        InterfaceRow(interface: iface)
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
-        .listStyle(.insetGrouped)
-        .refreshable { await vm.refresh() }
     }
 
     // MARK: - Global Config
@@ -59,25 +67,36 @@ struct NetworkView: View {
         List {
             Section("Hostname") {
                 LabeledContent("Hostname", value: vm.networkConfig.hostname)
-                LabeledContent("Domain", value: vm.networkConfig.domain)
-                if !vm.networkConfig.outboundInterface.isEmpty {
+                if vm.networkConfig.domain != "—" && !vm.networkConfig.domain.isEmpty {
+                    LabeledContent("Domain", value: vm.networkConfig.domain)
+                }
+                if vm.networkConfig.outboundInterface != "—" && !vm.networkConfig.outboundInterface.isEmpty {
                     LabeledContent("Outbound Interface", value: vm.networkConfig.outboundInterface)
                 }
             }
             Section("Gateways") {
-                if !vm.networkConfig.ipv4Gateway.isEmpty {
+                if vm.networkConfig.ipv4Gateway != "—" && !vm.networkConfig.ipv4Gateway.isEmpty {
                     LabeledContent("IPv4 Gateway", value: vm.networkConfig.ipv4Gateway)
+                        .textSelection(.enabled)
+                } else {
+                    LabeledContent("IPv4 Gateway", value: "Not configured")
                 }
-                if !vm.networkConfig.ipv6Gateway.isEmpty {
+                if vm.networkConfig.ipv6Gateway != "—" && !vm.networkConfig.ipv6Gateway.isEmpty {
                     LabeledContent("IPv6 Gateway", value: vm.networkConfig.ipv6Gateway)
+                        .textSelection(.enabled)
+                } else {
+                    LabeledContent("IPv6 Gateway", value: "Not configured")
                 }
             }
             Section("DNS") {
-                ForEach(vm.networkConfig.nameservers, id: \.self) { ns in
-                    Text(ns).font(.body.monospaced())
-                }
                 if vm.networkConfig.nameservers.isEmpty {
-                    Text("No nameservers configured").foregroundStyle(.secondary)
+                    Text("No nameservers configured").font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.networkConfig.nameservers, id: \.self) { ns in
+                        LabeledContent("Nameserver", value: ns)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+                    }
                 }
             }
             if !vm.networkConfig.httpProxy.isEmpty {
@@ -92,7 +111,9 @@ struct NetworkView: View {
     // MARK: - Static Routes
     private var routesList: some View {
         Group {
-            if vm.staticRoutes.isEmpty {
+            if vm.isLoading && vm.staticRoutes.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.staticRoutes.isEmpty {
                 ContentUnavailableView("No Static Routes",
                     systemImage: "arrow.triangle.branch",
                     description: Text("No static routes configured."))
@@ -138,14 +159,24 @@ struct InterfaceRow: View {
                         .font(.caption2.bold())
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.15), in: Capsule())
-                    if !interface.linkState {
+                    if interface.linkState {
+                        if let speed = interface.speed {
+                            Text("\(speed) Mbps")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Color.green.opacity(0.1), in: Capsule())
+                        }
+                    } else {
                         Text("Down").font(.caption2.bold()).foregroundStyle(.red)
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.red.opacity(0.1), in: Capsule())
                     }
                 }
                 if let ip = interface.ipv4Addresses.first {
                     Text(ip).font(.caption.monospaced()).foregroundStyle(.secondary)
                 } else if !interface.linkState {
-                    Text("No link").font(.caption).foregroundStyle(.secondary)
+                    Text("No link").font(.caption).foregroundStyle(.tertiary)
                 }
                 if interface.linkState {
                     HStack(spacing: 10) {
@@ -168,15 +199,7 @@ struct InterfaceRow: View {
         .padding(.vertical, 4)
     }
 
-    private var typeIcon: String {
-        switch interface.type {
-        case .physical: return "cable.connector"
-        case .vlan:     return "square.stack.3d.up"
-        case .bridge:   return "network"
-        case .lag:      return "link"
-        case .unknown:  return "questionmark.circle"
-        }
-    }
+    private var typeIcon: String { interface.type.icon }
 
     private func formatBps(_ bps: Double) -> String {
         let mbps = bps / 1_000_000
@@ -265,8 +288,8 @@ struct InterfaceDetailView: View {
                     .chartXAxis(.hidden)
                     .frame(height: 120)
                     HStack(spacing: 16) {
-                        Label("In", systemImage: "square.fill").foregroundStyle(.blue).font(.caption)
-                        Label("Out", systemImage: "square.fill").foregroundStyle(.orange).font(.caption)
+                        Label("In", systemImage: "circle.fill").foregroundStyle(.blue).font(.caption)
+                        Label("Out", systemImage: "circle.fill").foregroundStyle(.orange).font(.caption)
                     }
                 }
             }

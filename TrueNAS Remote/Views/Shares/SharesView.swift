@@ -6,48 +6,48 @@ struct SharesView: View {
     @State private var segment = 0   // 0=SMB 1=NFS 2=iSCSI
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Share Type", selection: $segment) {
-                    Text("SMB").tag(0)
-                    Text("NFS").tag(1)
-                    Text("iSCSI").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal).padding(.vertical, 8)
+        VStack(spacing: 0) {
+            Picker("Share Type", selection: $segment) {
+                Text("SMB").tag(0)
+                Text("NFS").tag(1)
+                Text("iSCSI").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal).padding(.vertical, 8)
 
-                Group {
-                    switch segment {
-                    case 0: smbList
-                    case 1: nfsList
-                    default: iscsiList
-                    }
+            Group {
+                switch segment {
+                case 0: smbList
+                case 1: nfsList
+                default: iscsiList
                 }
             }
-            .navigationTitle("Shares")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if vm.isLoading { ProgressView().controlSize(.small) }
-                    else { Button("", systemImage: "arrow.clockwise") { Task { await vm.refresh() } } }
-                }
-            }
-            .task(id: settings.refreshInterval) {
-                await vm.refresh()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                    await vm.refresh()
-                }
-            }
-            .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
-                Button("OK") { vm.errorMessage = nil }
-            } message: { Text(vm.errorMessage ?? "") }
         }
+        .navigationTitle("Shares")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if vm.isLoading { ProgressView().controlSize(.small) }
+            }
+        }
+        .task(id: settings.refreshInterval) {
+            await vm.refresh()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(settings.refreshInterval))
+                await vm.refresh()
+            }
+        }
+        .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+            Button("OK") { vm.errorMessage = nil }
+        } message: { Text(vm.errorMessage ?? "") }
     }
 
     // MARK: - SMB
     private var smbList: some View {
         Group {
-            if vm.smbShares.isEmpty {
+            if vm.isLoading && vm.smbShares.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.smbShares.isEmpty {
                 ContentUnavailableView("No SMB Shares",
                     systemImage: "folder.fill.badge.person.crop",
                     description: Text("No Windows shares configured."))
@@ -58,6 +58,7 @@ struct SharesView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
     }
@@ -65,7 +66,9 @@ struct SharesView: View {
     // MARK: - NFS
     private var nfsList: some View {
         Group {
-            if vm.nfsShares.isEmpty {
+            if vm.isLoading && vm.nfsShares.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.nfsShares.isEmpty {
                 ContentUnavailableView("No NFS Exports",
                     systemImage: "folder.fill.badge.gearshape",
                     description: Text("No NFS exports configured."))
@@ -74,6 +77,7 @@ struct SharesView: View {
                     NFSShareRow(share: share)
                 }
                 .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
     }
@@ -81,7 +85,9 @@ struct SharesView: View {
     // MARK: - iSCSI
     private var iscsiList: some View {
         Group {
-            if vm.iscsiTargets.isEmpty && vm.iscsiExtents.isEmpty {
+            if vm.isLoading && vm.iscsiTargets.isEmpty && vm.iscsiExtents.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.iscsiTargets.isEmpty && vm.iscsiExtents.isEmpty {
                 ContentUnavailableView("No iSCSI Config",
                     systemImage: "externaldrive.connected.to.line.below",
                     description: Text("No iSCSI targets or extents."))
@@ -103,6 +109,7 @@ struct SharesView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
     }
@@ -118,23 +125,29 @@ private struct SMBShareRow: View {
             Image(systemName: share.enabled ? "folder.fill" : "folder")
                 .foregroundStyle(share.enabled ? .blue : .secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(share.name).font(.body.weight(.medium))
-                Text(share.path).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                Text(share.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if !share.comment.isEmpty {
-                    Text(share.comment).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(share.comment)
+                        .font(.caption).foregroundStyle(.tertiary).lineLimit(1)
                 }
-                HStack(spacing: 8) {
-                    if share.readOnly  { Tag("Read-only", color: .orange) }
-                    if share.guestOk   { Tag("Guest OK",  color: .yellow) }
-                    if share.browsable { Tag("Browsable", color: .blue)   }
+                if share.readOnly || share.guestOk || share.browsable {
+                    HStack(spacing: 6) {
+                        if share.readOnly  { Tag("Read-only", color: .orange) }
+                        if share.guestOk   { Tag("Guest OK",  color: .yellow) }
+                        if share.browsable { Tag("Browsable", color: .blue)   }
+                    }
                 }
             }
-            Spacer()
-            Toggle("", isOn: .init(get: { share.enabled }, set: { _ in onToggle() }))
+            Spacer(minLength: 8)
+            Toggle("Enable \(share.name)", isOn: .init(get: { share.enabled }, set: { _ in onToggle() }))
                 .labelsHidden()
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }
 
@@ -165,6 +178,7 @@ private struct NFSShareRow: View {
                     }
                 }
             }
+            Spacer()
         }
         .padding(.vertical, 2)
     }
@@ -209,9 +223,7 @@ private struct ISCSIExtentRow: View {
     }
 
     private func formatBytes(_ b: Int64) -> String {
-        let gb = Double(b) / 1_073_741_824
-        if gb >= 1024 { return String(format: "%.1f TB", gb / 1024) }
-        return String(format: "%.0f GB", gb)
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .binary)
     }
 }
 

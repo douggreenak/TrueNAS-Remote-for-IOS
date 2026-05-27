@@ -50,6 +50,7 @@ struct InstalledApp: Identifiable {
     var latestVersion: String?
     let description: String
     let catalog: String      // e.g. "TRUENAS" or "CUSTOM"
+    var iconURL: String?     // from metadata.icon
     var metadata: AppMetadata?
 }
 

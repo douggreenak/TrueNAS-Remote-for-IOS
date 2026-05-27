@@ -10,27 +10,41 @@ struct PoolDetailView: View {
         List {
             // ── Health banner ─────────────────────────────────────────
             Section {
-                HStack {
+                HStack(spacing: 14) {
                     Image(systemName: pool.status.icon)
-                        .font(.largeTitle)
+                        .font(.system(size: 36))
                         .foregroundStyle(pool.status.color)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(pool.status.label)
                             .font(.title2.bold())
                             .foregroundStyle(pool.status.color)
-                        Text("\(pool.disks.count) disks · \(pool.vdevs.count) VDEVs")
-                            .font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            Label("\(pool.disks.count) disk\(pool.disks.count == 1 ? "" : "s")",
+                                  systemImage: "internaldrive")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Label("\(pool.vdevs.count) VDEV\(pool.vdevs.count == 1 ? "" : "s")",
+                                  systemImage: "cylinder.split.1x2")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
+                    if pool.totalErrors > 0 {
+                        VStack(spacing: 2) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("\(pool.totalErrors) error\(pool.totalErrors == 1 ? "" : "s")")
+                                .font(.caption2.bold()).foregroundStyle(.orange)
+                        }
+                    }
                 }
                 .padding(.vertical, 6)
             }
 
             // ── Capacity ──────────────────────────────────────────────
             Section("Capacity") {
-                LabeledContent("Total",     value: pool.formattedTotal)
-                LabeledContent("Used",      value: pool.formattedUsed)
-                LabeledContent("Free",      value: pool.formattedFree)
+                LabeledContent("Total",     value: pool.formattedTotal).textSelection(.enabled)
+                LabeledContent("Used",      value: pool.formattedUsed).textSelection(.enabled)
+                LabeledContent("Free",      value: pool.formattedFree).textSelection(.enabled)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Usage")
@@ -38,39 +52,62 @@ struct PoolDetailView: View {
                         Text(String(format: "%.1f%%", pool.usedFraction * 100))
                             .foregroundStyle(.secondary)
                     }
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.secondary.opacity(0.2)).frame(height: 8)
-                            Capsule()
-                                .fill(pool.usedFraction > 0.9 ? Color.red
-                                      : pool.usedFraction > 0.75 ? Color.orange : Color.blue)
-                                .frame(width: geo.size.width * pool.usedFraction, height: 8)
-                        }
-                    }.frame(height: 8)
+                    CapacityBar(fraction: pool.usedFraction)
                 }
             }
 
             // ── Errors ───────────────────────────────────────────────
             if pool.totalErrors > 0 {
                 Section("Errors") {
-                    LabeledContent("Read",     value: "\(pool.readErrors)")
-                        .foregroundStyle(pool.readErrors > 0 ? .red : .primary)
-                    LabeledContent("Write",    value: "\(pool.writeErrors)")
-                        .foregroundStyle(pool.writeErrors > 0 ? .red : .primary)
-                    LabeledContent("Checksum", value: "\(pool.checksumErrors)")
-                        .foregroundStyle(pool.checksumErrors > 0 ? .orange : .primary)
+                    HStack {
+                        Text("Read")
+                        Spacer()
+                        Text("\(pool.readErrors)")
+                            .foregroundStyle(pool.readErrors > 0 ? Color.red : Color.secondary)
+                            .fontWeight(pool.readErrors > 0 ? .semibold : .regular)
+                    }
+                    HStack {
+                        Text("Write")
+                        Spacer()
+                        Text("\(pool.writeErrors)")
+                            .foregroundStyle(pool.writeErrors > 0 ? Color.red : Color.secondary)
+                            .fontWeight(pool.writeErrors > 0 ? .semibold : .regular)
+                    }
+                    HStack {
+                        Text("Checksum")
+                        Spacer()
+                        Text("\(pool.checksumErrors)")
+                            .foregroundStyle(pool.checksumErrors > 0 ? Color.orange : Color.secondary)
+                            .fontWeight(pool.checksumErrors > 0 ? .semibold : .regular)
+                    }
                 }
             }
 
             // ── Last Scrub ───────────────────────────────────────────
             Section("Maintenance") {
                 if let d = pool.lastScrub {
-                    LabeledContent("Last Scrub", value: d.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Last Scrub") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(d, format: .dateTime.month(.abbreviated).day().year())
+                                .font(.subheadline)
+                            Text(d, style: .relative)
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    LabeledContent("Last Scrub", value: "Never")
                 }
                 if let s = pool.lastScrubStatus {
-                    LabeledContent("Scrub Result", value: s.capitalized)
+                    HStack {
+                        Text("Scrub Result")
+                        Spacer()
+                        Text(s.capitalized)
+                            .foregroundStyle(s.lowercased().contains("finish") ? Color.green
+                                             : s.lowercased().contains("error") ? Color.red : Color.primary)
+                            .font(.subheadline.weight(.medium))
+                    }
                 }
-                Button(role: .none) { showScrubAlert = true } label: {
+                Button { showScrubAlert = true } label: {
                     Label("Start Scrub", systemImage: "wand.and.sparkles")
                 }
             }
@@ -95,7 +132,7 @@ struct PoolDetailView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle(pool.name)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .alert("Start Scrub?", isPresented: $showScrubAlert) {
             Button("Scrub", role: .destructive) { Task { await vm.scrub(pool: pool) } }
             Button("Cancel", role: .cancel) {}
@@ -109,15 +146,22 @@ struct PoolDetailView: View {
 private struct VDEVRow: View {
     let vdev: VDEV
     var body: some View {
-        HStack {
-            Image(systemName: vdev.type.icon).foregroundStyle(.tint).frame(width: 24)
+        HStack(spacing: 12) {
+            Image(systemName: vdev.type.icon)
+                .foregroundStyle(vdev.status.color)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(vdev.type.label).font(.subheadline.weight(.medium))
-                Text("\(vdev.disks.count) disk(s)").font(.caption).foregroundStyle(.secondary)
+                Text("\(vdev.disks.count) disk\(vdev.disks.count == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Circle().fill(vdev.status.color).frame(width: 8, height: 8)
-            Text(vdev.status.label).font(.caption).foregroundStyle(vdev.status.color)
+            Label(vdev.status.label, systemImage: vdev.status == .online
+                  ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(vdev.status.color)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(vdev.status.color.opacity(0.1), in: Capsule())
         }
     }
 }
@@ -128,7 +172,7 @@ private struct DiskRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "internaldrive.fill").foregroundStyle(.tint)
-                Text(disk.id.uppercased()).font(.headline)
+                Text(disk.id).font(.headline)
                 Spacer()
                 Label(disk.smartStatus == .passed ? "SMART OK" : disk.smartStatus.rawValue,
                       systemImage: disk.smartStatus.icon)

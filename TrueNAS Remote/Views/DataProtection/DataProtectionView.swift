@@ -5,106 +5,161 @@ struct DataProtectionView: View {
     @Environment(SettingsViewModel.self)       private var settings
     @State private var segment = 0  // 0=Snapshots 1=Replication 2=Cloud 3=Rsync 4=Scrub
 
+    private let tabs = ["Snapshots", "Replication", "Cloud Sync", "Rsync", "Scrub"]
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(["Snapshots", "Replication", "Cloud Sync", "Rsync", "Scrub"].indices, id: \.self) { i in
-                            Button {
-                                withAnimation { segment = i }
-                            } label: {
-                                Text(["Snapshots", "Replication", "Cloud Sync", "Rsync", "Scrub"][i])
-                                    .font(.subheadline.weight(segment == i ? .semibold : .regular))
-                                    .foregroundStyle(segment == i ? .primary : .secondary)
-                                    .padding(.horizontal, 16).padding(.vertical, 8)
-                                    .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
-                                                in: Capsule())
-                            }
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(tabs.indices, id: \.self) { i in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { segment = i }
+                        } label: {
+                            Text(tabs[i])
+                                .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                .foregroundStyle(segment == i ? .primary : .secondary)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                                .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
+                                            in: Capsule())
                         }
                     }
-                    .padding(.horizontal)
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal)
+            }
+            .padding(.vertical, 4)
 
-                Divider()
+            Divider()
 
-                Group {
-                    switch segment {
-                    case 0: snapshotsList
-                    case 1: replicationList
-                    case 2: cloudSyncList
-                    case 3: rsyncList
-                    default: scrubList
-                    }
+            Group {
+                switch segment {
+                case 0: snapshotsList
+                case 1: replicationList
+                case 2: cloudSyncList
+                case 3: rsyncList
+                default: scrubList
                 }
             }
-            .navigationTitle("Data Protection")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if vm.isLoading { ProgressView().controlSize(.small) }
-                    else { Button("", systemImage: "arrow.clockwise") { Task { await vm.refresh() } } }
-                }
-            }
-            .task(id: settings.refreshInterval) {
-                await vm.refresh()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                    await vm.refresh()
-                }
-            }
-            .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
-                Button("OK") { vm.errorMessage = nil }
-            } message: { Text(vm.errorMessage ?? "") }
         }
+        .navigationTitle("Data Protection")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if vm.isLoading { ProgressView().controlSize(.small) }
+            }
+        }
+        .task(id: settings.refreshInterval) {
+            await vm.refresh()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(settings.refreshInterval))
+                await vm.refresh()
+            }
+        }
+        .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+            Button("OK") { vm.errorMessage = nil }
+        } message: { Text(vm.errorMessage ?? "") }
     }
 
     // MARK: - Snapshot Tasks
     private var snapshotsList: some View {
-        List(vm.snapshotTasks) { task in
-            SnapshotTaskRow(task: task) {
-                Task { await vm.runSnapshotTask(task) }
+        Group {
+            if vm.isLoading && vm.snapshotTasks.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.snapshotTasks.isEmpty {
+                ContentUnavailableView("No Snapshot Tasks",
+                    systemImage: "camera.badge.clock",
+                    description: Text("No periodic snapshot tasks configured."))
+            } else {
+                List(vm.snapshotTasks) { task in
+                    SnapshotTaskRow(task: task) {
+                        Task { await vm.runSnapshotTask(task) }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     // MARK: - Replication
     private var replicationList: some View {
-        List(vm.replication) { task in
-            ReplicationRow(task: task) {
-                Task { await vm.runReplication(task) }
+        Group {
+            if vm.isLoading && vm.replication.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.replication.isEmpty {
+                ContentUnavailableView("No Replication Tasks",
+                    systemImage: "arrow.triangle.2.circlepath",
+                    description: Text("No replication tasks configured."))
+            } else {
+                List(vm.replication) { task in
+                    ReplicationRow(task: task) {
+                        Task { await vm.runReplication(task) }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     // MARK: - Cloud Sync
     private var cloudSyncList: some View {
-        List(vm.cloudSync) { task in
-            CloudSyncRow(task: task) {
-                Task { await vm.runCloudSync(task) }
+        Group {
+            if vm.isLoading && vm.cloudSync.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.cloudSync.isEmpty {
+                ContentUnavailableView("No Cloud Sync Tasks",
+                    systemImage: "cloud.fill",
+                    description: Text("No cloud sync tasks configured."))
+            } else {
+                List(vm.cloudSync) { task in
+                    CloudSyncRow(task: task) {
+                        Task { await vm.runCloudSync(task) }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     // MARK: - Rsync
     private var rsyncList: some View {
-        List(vm.rsyncTasks) { task in
-            RsyncRow(task: task) {
-                Task { await vm.runRsync(task) }
+        Group {
+            if vm.isLoading && vm.rsyncTasks.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.rsyncTasks.isEmpty {
+                ContentUnavailableView("No Rsync Tasks",
+                    systemImage: "arrow.left.arrow.right",
+                    description: Text("No rsync tasks configured."))
+            } else {
+                List(vm.rsyncTasks) { task in
+                    RsyncRow(task: task) {
+                        Task { await vm.runRsync(task) }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     // MARK: - Scrub
     private var scrubList: some View {
-        List(vm.scrubTasks) { task in
-            ScrubRow(task: task)
+        Group {
+            if vm.isLoading && vm.scrubTasks.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.scrubTasks.isEmpty {
+                ContentUnavailableView("No Scrub Tasks",
+                    systemImage: "sparkles",
+                    description: Text("No scrub tasks configured."))
+            } else {
+                List(vm.scrubTasks) { task in
+                    ScrubRow(task: task)
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
+            }
         }
-        .listStyle(.insetGrouped)
     }
 }
 
@@ -115,28 +170,29 @@ private struct SnapshotTaskRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            RunStatusBadge(status: task.lastRunStatus)
-                .frame(width: 80, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(task.dataset).font(.body.weight(.medium)).lineLimit(1)
-                HStack(spacing: 8) {
-                    Text(task.schedule).font(.caption).foregroundStyle(.secondary)
-                    if task.recursive { Text("Recursive").font(.caption2).foregroundStyle(.blue) }
+                HStack(spacing: 6) {
+                    Text(task.dataset).font(.body.weight(.medium)).lineLimit(1)
+                    if !task.enabled {
+                        Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
+                    }
                 }
-                Text("Keep: \(task.lifetime)").font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    RunStatusBadge(status: task.lastRunStatus)
+                    Text(task.schedule).font(.caption).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    if task.recursive { Text("Recursive").font(.caption2).foregroundStyle(.blue) }
+                    Text("Keep: \(task.lifetime)").font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Spacer()
-            HStack(spacing: 8) {
-                if !task.enabled {
-                    Image(systemName: "pause.circle").foregroundStyle(.secondary)
-                }
-                Button { onRun() } label: {
-                    Image(systemName: "play.circle.fill").font(.title3).foregroundStyle(.green)
-                }
-                .buttonStyle(.plain)
+            Button { onRun() } label: {
+                Image(systemName: "play.circle.fill").font(.title3).foregroundStyle(.green)
             }
+            .buttonStyle(.plain)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }
 
@@ -189,9 +245,13 @@ private struct CloudSyncRow: View {
                     Spacer()
                     RunStatusBadge(status: task.lastRunStatus)
                 }
-                HStack(spacing: 8) {
-                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle" : "arrow.down.circle")
+                HStack(spacing: 6) {
+                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(task.direction == "PUSH" ? Color.blue : Color.green)
+                    Text(task.direction == "PUSH" ? "Push" : "Pull")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.tertiary)
                     Text(task.provider).font(.caption).foregroundStyle(.secondary)
                     if !task.enabled {
                         Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
@@ -199,7 +259,7 @@ private struct CloudSyncRow: View {
                 }
                 Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
                 if let bytes = task.bytesTransferred {
-                    Text("Last: \(formatBytes(bytes))").font(.caption2).foregroundStyle(.secondary)
+                    Text("Last transfer: \(formatBytes(bytes))").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Button { onRun() } label: {
@@ -211,9 +271,7 @@ private struct CloudSyncRow: View {
     }
 
     private func formatBytes(_ b: Int64) -> String {
-        let gb = Double(b) / 1e9
-        if gb >= 1 { return String(format: "%.2f GB", gb) }
-        return String(format: "%.0f MB", Double(b) / 1e6)
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .binary)
     }
 }
 
@@ -225,15 +283,18 @@ private struct RsyncRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.purple).frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text("\(task.path) → \(task.remoteHost)").font(.body.weight(.medium)).lineLimit(1)
+                    Text(task.path).font(.body.weight(.medium)).lineLimit(1)
                     Spacer()
                     RunStatusBadge(status: task.lastRunStatus)
                 }
-                HStack(spacing: 8) {
-                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle" : "arrow.down.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(task.direction == "PUSH" ? Color.blue : Color.green)
+                    Text(task.remoteHost).font(.caption).foregroundStyle(.secondary)
+                    Text(":").foregroundStyle(.tertiary)
                     Text(task.remotePath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
@@ -243,7 +304,7 @@ private struct RsyncRow: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
 

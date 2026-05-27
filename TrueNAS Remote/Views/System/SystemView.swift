@@ -9,65 +9,63 @@ struct SystemView: View {
     private let tabs = ["Alerts", "Boot Envs", "Users", "Certs", "Audit", "Update"]
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(tabs.indices, id: \.self) { i in
-                            Button {
-                                withAnimation { segment = i }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(tabs[i])
-                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
-                                        .foregroundStyle(segment == i ? .primary : .secondary)
-                                    if i == 0 && vm.criticalCount > 0 {
-                                        Text("\(vm.criticalCount)")
-                                            .font(.caption2.bold())
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 5).padding(.vertical, 2)
-                                            .background(Color.red, in: Capsule())
-                                    }
-                                    if i == 5 && dashboard.systemInfo.updateAvailable {
-                                        Circle().fill(Color.blue).frame(width: 7, height: 7)
-                                    }
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(tabs.indices, id: \.self) { i in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { segment = i }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(tabs[i])
+                                    .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                    .foregroundStyle(segment == i ? .primary : .secondary)
+                                if i == 0 && vm.criticalCount > 0 {
+                                    Text("\(vm.criticalCount)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(Color.red, in: Capsule())
                                 }
-                                .padding(.horizontal, 14).padding(.vertical, 8)
-                                .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
-                                            in: Capsule())
+                                if i == 5 && dashboard.systemInfo.updateAvailable {
+                                    Circle().fill(Color.blue).frame(width: 7, height: 7)
+                                }
                             }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
+                                        in: Capsule())
                         }
                     }
-                    .padding(.horizontal)
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal)
+            }
+            .padding(.vertical, 4)
 
-                Divider()
+            Divider()
 
-                Group {
-                    switch segment {
-                    case 0: alertsView
-                    case 1: bootEnvsView
-                    case 2: usersView
-                    case 3: certsView
-                    case 4: auditView
-                    default: updateView
-                    }
+            Group {
+                switch segment {
+                case 0: alertsView
+                case 1: bootEnvsView
+                case 2: usersView
+                case 3: certsView
+                case 4: auditView
+                default: updateView
                 }
             }
-            .navigationTitle("System")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if vm.isLoading { ProgressView().controlSize(.small) }
-                    else { Button("", systemImage: "arrow.clockwise") { Task { await vm.refresh() } } }
-                }
+        }
+        .navigationTitle("System")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if vm.isLoading { ProgressView().controlSize(.small) }
             }
-            .task(id: settings.refreshInterval) {
+        }
+        .task(id: settings.refreshInterval) {
+            await vm.refresh()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(settings.refreshInterval))
                 await vm.refresh()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                    await vm.refresh()
-                }
             }
         }
     }
@@ -75,7 +73,9 @@ struct SystemView: View {
     // MARK: - Alerts
     private var alertsView: some View {
         Group {
-            if vm.alerts.isEmpty {
+            if vm.isLoading && vm.alerts.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.alerts.isEmpty {
                 ContentUnavailableView("No Alerts",
                     systemImage: "checkmark.circle.fill",
                     description: Text("System is healthy."))
@@ -110,31 +110,62 @@ struct SystemView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .refreshable { await vm.refresh() }
             }
         }
     }
 
     // MARK: - Boot Environments
     private var bootEnvsView: some View {
-        List(vm.bootEnvironments) { env in
-            BootEnvRow(env: env) {
-                Task { await vm.activateBootEnv(env) }
+        Group {
+            if vm.bootEnvironments.isEmpty {
+                ContentUnavailableView("No Boot Environments",
+                    systemImage: "externaldrive.badge.timemachine",
+                    description: Text("No boot environments found."))
+            } else {
+                List(vm.bootEnvironments) { env in
+                    BootEnvRow(env: env) {
+                        Task { await vm.activateBootEnv(env) }
+                    }
+                }
+                .listStyle(.insetGrouped)
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     // MARK: - Users & Groups
     private var usersView: some View {
         List {
-            Section("Users (\(vm.users.count))") {
-                ForEach(vm.users) { user in
-                    UserRow(user: user)
+            let regularUsers = vm.users.filter { !$0.builtIn }
+            let builtinUsers = vm.users.filter { $0.builtIn }
+            if !regularUsers.isEmpty {
+                Section("Users (\(regularUsers.count))") {
+                    ForEach(regularUsers) { user in
+                        UserRow(user: user)
+                    }
                 }
             }
-            Section("Groups (\(vm.groups.count))") {
-                ForEach(vm.groups) { group in
-                    GroupRow(group: group)
+            if !builtinUsers.isEmpty {
+                Section("Built-in Users (\(builtinUsers.count))") {
+                    ForEach(builtinUsers) { user in
+                        UserRow(user: user)
+                    }
+                }
+            }
+            let regularGroups = vm.groups.filter { !$0.builtIn }
+            let builtinGroups = vm.groups.filter { $0.builtIn }
+            if !regularGroups.isEmpty {
+                Section("Groups (\(regularGroups.count))") {
+                    ForEach(regularGroups) { group in
+                        GroupRow(group: group)
+                    }
+                }
+            }
+            if !builtinGroups.isEmpty {
+                Section("Built-in Groups (\(builtinGroups.count))") {
+                    ForEach(builtinGroups) { group in
+                        GroupRow(group: group)
+                    }
                 }
             }
         }
@@ -187,13 +218,15 @@ struct SystemView: View {
                     }
                     .padding(.vertical, 4)
                     Button {
-                        // In a real app this would open the update flow
+                        // Update requires TrueNAS web UI interaction
                     } label: {
                         Label("Download & Install", systemImage: "arrow.down.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(true)  // Requires full server interaction
+                    .disabled(true)
+                    Text("Updates must be applied from the TrueNAS web interface.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     HStack(spacing: 12) {
                         Image(systemName: "checkmark.circle.fill")
@@ -233,15 +266,6 @@ private struct AlertRow: View {
                     Text(alert.relativeTime).font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            Spacer()
-            if let onDismiss {
-                Button {
-                    onDismiss()
-                } label: {
-                    Image(systemName: "xmark.circle").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
         }
         .padding(.vertical, 2)
     }
@@ -257,8 +281,8 @@ private struct BootEnvRow: View {
             Image(systemName: env.active ? "star.fill" : "star")
                 .foregroundStyle(env.active ? .yellow : .secondary)
                 .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
                     Text(env.name).font(.body.weight(.medium))
                     if env.active {
                         Text("Active").font(.caption2.bold())
@@ -267,12 +291,14 @@ private struct BootEnvRow: View {
                             .background(Color.green.opacity(0.12), in: Capsule())
                     }
                     if env.keepForever {
-                        Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                        Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.orange)
                     }
                 }
-                HStack(spacing: 8) {
-                    Text(env.formattedDate).font(.caption).foregroundStyle(.secondary)
-                    Text(env.formattedSize).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Label(env.formattedDate, systemImage: "calendar")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Label(env.formattedSize, systemImage: "internaldrive")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -283,7 +309,7 @@ private struct BootEnvRow: View {
                     .controlSize(.small)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }
 
@@ -359,14 +385,22 @@ private struct CertRow: View {
                 Text(cert.name).font(.body.weight(.medium))
                 Text(cert.commonName).font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 8) {
-                    Text(cert.issuer).font(.caption2).foregroundStyle(.secondary)
-                    Text(cert.keyType + " \(cert.keyLength)").font(.caption2).foregroundStyle(.secondary)
+                    Text(cert.keyType + " \(cert.keyLength)-bit")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if !cert.issuer.isEmpty && cert.issuer != "—" {
+                        Text(cert.issuer).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text(cert.expiryLabel).font(.caption.bold()).foregroundStyle(cert.expiryColor)
-                Text(cert.until, style: .date).font(.caption2).foregroundStyle(.secondary)
+                Text(cert.expiryLabel)
+                    .font(.caption.bold())
+                    .foregroundStyle(cert.expiryColor)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(cert.expiryColor.opacity(0.1), in: Capsule())
+                Text(cert.until, format: .dateTime.month(.abbreviated).day().year())
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 2)
@@ -391,7 +425,12 @@ private struct AuditRow: View {
                 }
                 HStack(spacing: 8) {
                     Text(entry.username).font(.caption).foregroundStyle(.secondary)
-                    Text(entry.address).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    // Only apply monospace for real IP addresses, not placeholder "—"
+                    if entry.address == "—" {
+                        Text(entry.address).font(.caption).foregroundStyle(.tertiary)
+                    } else {
+                        Text(entry.address).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
                 }
             }
             Spacer()
@@ -408,8 +447,7 @@ private struct AuditLogView: View {
     @State private var filterService = "All"
 
     private var services: [String] {
-        let all = ["All"] + Array(Set(entries.map(\.service))).sorted()
-        return all
+        ["All"] + Array(Set(entries.map(\.service))).sorted()
     }
 
     private var filtered: [AuditEntry] {
@@ -424,41 +462,45 @@ private struct AuditLogView: View {
     }
 
     var body: some View {
-        List {
-            // Service filter
-            if !entries.isEmpty {
-                Section {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(services, id: \.self) { svc in
-                                Button {
-                                    filterService = svc
-                                } label: {
-                                    Text(svc)
-                                        .font(.caption.weight(filterService == svc ? .semibold : .regular))
-                                        .foregroundStyle(filterService == svc ? .white : .primary)
-                                        .padding(.horizontal, 10).padding(.vertical, 5)
-                                        .background(filterService == svc ? Color.accentColor : Color.secondary.opacity(0.15),
-                                                    in: Capsule())
-                                }
+        VStack(spacing: 0) {
+            // Service filter chips — above the list, no Section wrapper
+            if services.count > 2 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(services, id: \.self) { svc in
+                            Button {
+                                filterService = svc
+                            } label: {
+                                Text(svc)
+                                    .font(.caption.weight(filterService == svc ? .semibold : .regular))
+                                    .foregroundStyle(filterService == svc ? .white : .primary)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(filterService == svc ? Color.accentColor : Color.secondary.opacity(0.15),
+                                                in: Capsule())
                             }
                         }
-                        .padding(.vertical, 2)
                     }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
                 }
+                Divider()
             }
 
-            Section("\(filtered.count) events") {
-                if filtered.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
-                } else {
-                    ForEach(filtered) { entry in
-                        AuditRow(entry: entry)
+            List {
+                Section(filtered.count == entries.count
+                        ? "\(filtered.count) events"
+                        : "\(filtered.count) of \(entries.count) events") {
+                    if filtered.isEmpty {
+                        ContentUnavailableView.search(text: searchText)
+                    } else {
+                        ForEach(filtered) { entry in
+                            AuditRow(entry: entry)
+                        }
                     }
                 }
             }
+            .listStyle(.insetGrouped)
         }
-        .listStyle(.insetGrouped)
         .searchable(text: $searchText, prompt: "Search by user, event, address…")
     }
 }

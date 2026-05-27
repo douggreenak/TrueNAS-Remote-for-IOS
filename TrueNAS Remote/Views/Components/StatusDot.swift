@@ -19,7 +19,7 @@ struct HealthBadge: View {
         Label(status.label, systemImage: status.icon)
             .font(.caption.bold())
             .foregroundStyle(status.color)
-            .padding(.horizontal, 8).padding(.vertical, 3)
+            .padding(.horizontal, 8).padding(.vertical, 4)
             .background(status.color.opacity(0.12), in: Capsule())
     }
 }
@@ -41,10 +41,9 @@ struct MetricCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Label(title, systemImage: icon)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
             content
         }
         .padding()

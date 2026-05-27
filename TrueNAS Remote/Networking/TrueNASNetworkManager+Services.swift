@@ -7,7 +7,7 @@ extension TrueNASNetworkManager {
         struct Raw: Decodable {
             let id: Int; let service: String; let state: String; let enable: Bool
         }
-        return try await get("/api/v2.0/service", as: [Raw].self).map {
+        return try await call(method: "service.query", as: [Raw].self).map {
             SystemService(id: $0.id,
                           name: $0.service,
                           displayName: SystemService.wellKnown[$0.service]
@@ -18,30 +18,33 @@ extension TrueNASNetworkManager {
     }
 
     func controlService(name: String, action: String) async throws {
-        struct Body: Encodable { let service: String }
-        try await post("/api/v2.0/service/\(action)", body: Body(service: name))
+        // params: [service_name]
+        let params = try JSONSerialization.data(withJSONObject: [name])
+        try await call(method: "service.\(action)", params: params)
     }
 
     // MARK: - Virtual Machines
     func fetchVMs() async throws -> [VirtualMachine] {
         struct Raw: Decodable {
             let id: Int; let name: String; let description: String?
-            let vcpus: Int?; let memory: Int?
+            let vcpus: Int?; let memory: Int?   // memory is already in MB from the API
             let status: StatusRaw
             struct StatusRaw: Decodable { let state: String; let pid: Int? }
         }
-        return try await get("/api/v2.0/vm", as: [Raw].self).map {
+        return try await call(method: "vm.query", as: [Raw].self).map {
             VirtualMachine(id: $0.id, name: $0.name,
                            status: VMState(rawValue: $0.status.state) ?? .unknown,
                            cpuCount: $0.vcpus ?? 1,
-                           memoryMB: ($0.memory ?? 512) / (1024 * 1024),
+                           memoryMB: $0.memory ?? 512,   // already MB — do NOT divide
                            description: $0.description ?? "",
                            uptime: nil, pid: $0.status.pid)
         }
     }
 
     func controlVM(id: Int, action: String) async throws {
-        try await post("/api/v2.0/vm/id/\(id)/\(action)")
+        // params: [vm_id]
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "vm.\(action)", params: params)
     }
 
     // MARK: - Apps
@@ -50,9 +53,13 @@ extension TrueNASNetworkManager {
             let id: String; let name: String; let state: String?
             let humanVersion: String?; let upgradeAvailable: Bool?
             let metadata: MetaRaw?
-            struct MetaRaw: Decodable { let description: String?; let train: String? }
+            struct MetaRaw: Decodable {
+                let description: String?
+                let train: String?
+                let icon: String?   // URL to app icon, e.g. https://media.sys.truenas.net/apps/…
+            }
         }
-        let raws = try await get("/api/v2.0/app", as: [Raw].self)
+        let raws = try await call(method: "app.query", as: [Raw].self)
         return raws.map { r in
             InstalledApp(id: r.id, name: r.name,
                          version: r.humanVersion ?? "—",
@@ -61,11 +68,14 @@ extension TrueNASNetworkManager {
                          latestVersion: nil,
                          description: r.metadata?.description ?? "",
                          catalog: r.metadata?.train ?? "TRUENAS",
+                         iconURL: r.metadata?.icon,
                          metadata: nil)
         }
     }
 
     func controlApp(id: String, action: String) async throws {
-        try await post("/api/v2.0/app/id/\(id)/\(action)")
+        // params: [app_id]
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "app.\(action)", params: params)
     }
 }

@@ -10,15 +10,13 @@ private struct BSONDateKey: CodingKey {
 }
 
 /// Decodes either a {"$date": ms} BSON wrapper or a plain Double epoch
-private func decodeBSONDate(from decoder: Decoder) throws -> Date? {
-    // Try dict form first
+nonisolated private func decodeBSONDate(from decoder: Decoder) throws -> Date? {
     if let c = try? decoder.container(keyedBy: BSONDateKey.self),
        let ms = try? c.decode(Double.self, forKey: .date) {
         return Date(timeIntervalSince1970: ms / 1000)
     }
-    // Try plain epoch double
     if let svc = try? decoder.singleValueContainer(),
-       let ts = try? svc.decode(Double.self) {
+       let ts  = try? svc.decode(Double.self) {
         return Date(timeIntervalSince1970: ts)
     }
     return nil
@@ -37,7 +35,7 @@ extension TrueNASNetworkManager {
             let systemSerial: String?
             let loadavg: [Double]?
         }
-        let raw = try await get("/api/v2.0/system/info", as: Raw.self)
+        let raw = try await call(method: "system.info", as: Raw.self)
         return SystemInfo(
             version:       raw.version,
             hostname:      raw.hostname,
@@ -68,7 +66,7 @@ extension TrueNASNetworkManager {
             let datetime: DateBox
             let dismissed: Bool
         }
-        let raws = try await get("/api/v2.0/alert/list", as: [Raw].self)
+        let raws = try await call(method: "alert.list", as: [Raw].self)
         return raws.map { r in
             TrueNASAlert(
                 id:        r.uuid,
@@ -82,38 +80,46 @@ extension TrueNASNetworkManager {
     }
 
     func dismissAlert(uuid: String) async throws {
-        try await post("/api/v2.0/alert/dismiss", body: uuid)
+        let params = try JSONSerialization.data(withJSONObject: [uuid])
+        try await call(method: "alert.dismiss", params: params)
     }
 
     // MARK: - Boot Environments
+    /// Returns [] gracefully on any error.
+    /// Method: boot.environment.query (NOT bootenv.query — renamed in TrueNAS 25.x)
     func fetchBootEnvironments() async throws -> [BootEnvironment] {
         struct DateBox: Decodable {
             let date: Date?
             init(from decoder: Decoder) throws { date = try? decodeBSONDate(from: decoder) }
         }
         struct Raw: Decodable {
-            let id: String
-            let name: String
-            let created: DateBox
-            let size: Int64?
+            let id: String          // version string, e.g. "25.10.3.1" — also the display name
             let activated: Bool
+            let active: Bool?       // currently booted
+            let created: DateBox
+            let usedBytes: Int64?   // snake_case → usedBytes via convertFromSnakeCase
             let keep: Bool?
         }
-        let raws = try await get("/api/v2.0/bootenv", as: [Raw].self)
-        return raws.map { r in
-            BootEnvironment(
-                id:          r.id,
-                name:        r.name,
-                created:     r.created.date ?? Date(),
-                size:        r.size ?? 0,
-                active:      r.activated,
-                keepForever: r.keep ?? false
-            )
+        do {
+            let raws = try await call(method: "boot.environment.query", as: [Raw].self)
+            return raws.map { r in
+                BootEnvironment(
+                    id:          r.id,
+                    name:        r.id,           // id is the human-readable version string
+                    created:     r.created.date ?? Date(),
+                    size:        r.usedBytes ?? 0,
+                    active:      r.activated || (r.active ?? false),
+                    keepForever: r.keep ?? false
+                )
+            }
+        } catch {
+            return []
         }
     }
 
     func activateBootEnvironment(id: String) async throws {
-        try await post("/api/v2.0/bootenv/id/\(id)/activate")
+        let params = try JSONSerialization.data(withJSONObject: [id])
+        try await call(method: "boot.environment.activate", params: params)
     }
 
     // MARK: - Users
@@ -124,15 +130,15 @@ extension TrueNASNetworkManager {
             let fullName: String
             let email: String?
             let shell: String
-            let homeDirectory: String
+            let home: String        // API field is "home" (not "home_directory")
             let locked: Bool
             let sudo: Bool?
             let groups: [Int]
             let builtin: Bool
         }
-        return try await get("/api/v2.0/user", as: [Raw].self).map {
+        return try await call(method: "user.query", as: [Raw].self).map {
             TrueNASUser(id: $0.uid, username: $0.username, fullName: $0.fullName,
-                        email: $0.email ?? "", shell: $0.shell, homeDir: $0.homeDirectory,
+                        email: $0.email ?? "", shell: $0.shell, homeDir: $0.home,
                         locked: $0.locked, sudoEnabled: $0.sudo ?? false,
                         groups: $0.groups, builtIn: $0.builtin)
         }
@@ -147,7 +153,7 @@ extension TrueNASNetworkManager {
             let builtin: Bool
             let sudo: Bool?
         }
-        return try await get("/api/v2.0/group", as: [Raw].self).map {
+        return try await call(method: "group.query", as: [Raw].self).map {
             TrueNASGroup(id: $0.gid, name: $0.group, users: $0.users.map { "\($0)" },
                          builtIn: $0.builtin, sudoEnabled: $0.sudo ?? false)
         }
@@ -156,15 +162,16 @@ extension TrueNASNetworkManager {
     // MARK: - Certificates
     func fetchCertificates() async throws -> [Certificate] {
         struct Raw: Decodable {
-            let id: Int; let name: String; let commonName: String?
+            let id: Int; let name: String
+            let common: String?     // API field is "common" (not "common_name")
             let issuer: String?; let san: [String]?
             let from: String?; let until: String?
             let keyType: String?; let keyLength: Int?
         }
         let df = DateFormatter(); df.dateFormat = "EEE MMM  d HH:mm:ss yyyy"
-        return try await get("/api/v2.0/certificate", as: [Raw].self).map { r in
+        return try await call(method: "certificate.query", as: [Raw].self).map { r in
             Certificate(id: r.id, name: r.name,
-                        commonName: r.commonName ?? r.name,
+                        commonName: r.common ?? r.name,
                         issuer: r.issuer ?? "—",
                         san: r.san ?? [],
                         from:  df.date(from: r.from  ?? "") ?? Date(),
@@ -175,35 +182,48 @@ extension TrueNASNetworkManager {
     }
 
     // MARK: - Audit Log
+    /// Falls back to empty list on any error so other System tab data still loads.
     func fetchAuditLog(limit: Int = 100) async throws -> [AuditEntry] {
+        struct AuditDate: Decodable {
+            let date: Date?
+            init(from decoder: Decoder) throws { date = try? decodeBSONDate(from: decoder) }
+        }
         struct Raw: Decodable {
-            let auditId: String
-            let timestamp: Double?
+            let auditId: String?
+            let timestamp: AuditDate?
             let username: String?
             let service: String?
             let event: String?
             let success: Bool?
             let address: String?
         }
-        let path = "/api/v2.0/audit?limit=\(limit)&offset=0&order_by=-timestamp"
-        return try await get(path, as: [Raw].self).map { r in
-            AuditEntry(
-                id:        r.auditId,
-                timestamp: r.timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date(),
-                username:  r.username ?? "—",
-                service:   r.service  ?? "—",
-                event:     r.event    ?? "—",
-                success:   r.success  ?? true,
-                address:   r.address  ?? "—",
-                detail:    [:]
-            )
+        do {
+            // params: [{"query-options": {...}}]  — NOT [filters, options] (that format is rejected)
+            let params = try JSONSerialization.data(withJSONObject: [
+                ["query-options": ["limit": limit, "order_by": ["-message_timestamp"]]] as [String: Any]
+            ])
+            let raws = try await call(method: "audit.query", params: params, as: [Raw].self)
+            return raws.map { r in
+                AuditEntry(
+                    id:        r.auditId ?? UUID().uuidString,
+                    timestamp: r.timestamp?.date ?? Date(),
+                    username:  r.username ?? "—",
+                    service:   r.service  ?? "—",
+                    event:     r.event    ?? "—",
+                    success:   r.success  ?? true,
+                    address:   r.address  ?? "—",
+                    detail:    [:]
+                )
+            }
+        } catch {
+            return []
         }
     }
 }
 
 // Safe array subscript
 extension Array {
-    subscript(safe index: Int) -> Element? {
+    nonisolated subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
 }
