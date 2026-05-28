@@ -90,6 +90,18 @@ Params are a JSON array — `[]` when a method takes no arguments.
 - BSON dates — timestamps come as `{"$date": ms}` objects; decoded by `TaskBSONDate` / `BSONDate` helpers
 - WSS required — TrueNAS revokes API keys used over plain `ws://`; app always connects via `wss://`
 - Self-signed cert — `InsecureTLSDelegate` in `TrueNASNetworkManager.swift` accepts it unconditionally
+- `disk.query` always returns `pool: null` — DO NOT use for pool membership
+- `disk.details` is the ONLY correct way to get pool membership (including boot-pool for OS drives)
+  - params: `[{"type":"BOTH","join_partitions":false}]`
+  - returns `{"used":[…],"unused":[…]}` each entry has `imported_zpool` and `exported_zpool`
+  - boot drives (sda/sdf) → `imported_zpool: "boot-pool"` (not in pool.query)
+- `disk.temperatures` params must be `[[]]` (outer = params array, inner = empty list of names = all disks)
+  - **NOT** `[{}]` which causes EINVAL "Input should be a valid list"
+- `disk.smart_test` — method exists but is NOT in core.get_methods (internal)
+  - correct params: `[[diskName], "SHORT"]` (two positional args: list of names, type string)
+  - **NOT** `[{"disks":[…],"type":"…"}]`
+  - Old method `smart.test.manual_test` does NOT exist in 25.x
+- No public API to READ S.M.A.R.T. results or attributes in 25.x; display status as "Unknown"
 
 ---
 
@@ -635,3 +647,71 @@ With `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, global free functions and exte
 ### Build Verification
 - [x] Build clean after Session 4 WebSocket migration — **BUILD SUCCEEDED** (2026-05-26)
 - [x] Build clean after Session 5 endpoint audit — **BUILD SUCCEEDED** (2026-05-26)
+- [x] Build clean after Session 6 performance + nav fixes — **BUILD SUCCEEDED** (2026-05-27)
+
+---
+
+## Performance & Navigation Fixes (2026-05-27 — Session 6)
+
+### Root-cause: 30-second startup
+
+Three compounding causes identified and fixed:
+
+1. **No per-call timeout** — any `reporting.get_data` call that received no server response
+   blocked the `withCheckedThrowingContinuation` forever (or until `timeoutIntervalForResource = 300`).
+   A single hung call was enough to freeze the whole `DashboardViewModel.refresh()` cycle.
+
+2. **All reporting data waited before showing anything** — `isLoading` stayed `true` until all
+   5 concurrent `reporting.get_data` calls completed (~5–15 s). Rings and cards showed 0 / blank
+   the entire time even though `system.info` returned in <1 s.
+
+3. **WebSocket connected on first API call** — the TLS handshake + auth cost (~1–2 s) hit every
+   cold launch because the socket was lazy-connected only when a view first appeared.
+
+### Fixes applied
+
+**`TrueNASNetworkManager.swift`**
+- Added 15-second per-call timeout inside `call()`: a background `Task` sleeps for 15 s then
+  calls `_fail(id:err:)`. If the real response arrives first, `_fail` is a no-op (continuation
+  already removed from `pending`). Prevents any single hung call from blocking indefinitely.
+- Added `nonisolated func preconnect()` — fires `_ensureConnected()` as a detached best-effort
+  task; called from `SettingsViewModel.init()` on app launch.
+
+**`ViewModels/DashboardViewModel.swift`** — split into fast + slow paths
+- `refresh()` — **fast path**: fetches only `system.info` (~0.5 s); sets `isLoading = false`
+  immediately after; triggers background chart load if one isn't already running.
+- `refreshCharts()` — **slow path**: fetches 4 reporting graphs + network sparkline concurrently;
+  guarded by `isLoadingCharts`; updates ring values (`cpuUsage`, `memoryUsed`, `memoryZFSCache`)
+  and history arrays when data arrives.
+- `isLoadingCharts` — new flag; `DashboardView` toolbar spinner shows while EITHER `isLoading`
+  OR `isLoadingCharts` is true.
+
+**`ViewModels/SettingsViewModel.swift`**
+- `init()` now calls `network.preconnect()` when credentials are already stored — starts the
+  WebSocket handshake in the background while the app's first view is still rendering.
+
+**`Views/Dashboard/DashboardView.swift`**
+- `.refreshable` now awaits both `vm.refresh()` AND `vm.refreshCharts()` so pull-to-refresh
+  updates charts immediately.
+- Toolbar spinner condition: `vm.isLoading || vm.isLoadingCharts`.
+
+### Navigation bar gap fix (back-button on separate row)
+
+**Root cause**: `.navigationBarTitleDisplayMode(.inline)` (iOS 14 API) is not fully respected by
+iOS 26's new `Tab` + `NavigationStack` navigation renderer, causing the back button to render in
+its own "back bar" row above the view title.
+
+**Fix**: replaced every `.navigationBarTitleDisplayMode(.inline)` with `.toolbarTitleDisplayMode(.inline)`
+(iOS 17+ API, designed for the new navigation system) in all 18 call-sites across:
+`DashboardView`, `StorageRootView`, `StorageView`, `PoolDetailView`, `NetworkView`,
+`InterfaceDetailView`, `SharesView`, `DataProtectionView`, `ServicesView`, `ReportingView`,
+`SystemView`, `SettingsView`, `SetupWizardView`.
+
+Additionally, `.toolbarTitleDisplayMode(.inline)` is now applied to the `NavigationStack`
+wrapper in each of the 9 tabs in `MainTabView.swift`. This sets the inline mode as the
+**default for all pushed detail views** in the stack, so any view that doesn't explicitly set it
+still behaves correctly.
+
+**`StorageView.swift`** (legacy file, superseded by `StorageRootView.swift`): removed the
+embedded `NavigationStack` to prevent double-stacking if the view is ever instantiated.
+`.toolbarTitleDisplayMode(.inline)` added for consistency.

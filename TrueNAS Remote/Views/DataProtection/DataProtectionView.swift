@@ -4,67 +4,105 @@ struct DataProtectionView: View {
     @Environment(DataProtectionViewModel.self) private var vm
     @Environment(SettingsViewModel.self)       private var settings
     @State private var segment = 0  // 0=Snapshots 1=Replication 2=Cloud 3=Rsync 4=Scrub
+    @Namespace private var tabNS
 
-    private let tabs = ["Snapshots", "Replication", "Cloud Sync", "Rsync", "Scrub"]
+    private let tabs: [(label: String, icon: String)] = [
+        ("Snapshots",   "camera.badge.clock"),
+        ("Replication", "arrow.triangle.2.circlepath"),
+        ("Cloud Sync",  "cloud.fill"),
+        ("Rsync",       "arrow.left.arrow.right"),
+        ("Scrub",       "sparkles"),
+    ]
 
     var body: some View {
-        VStack(spacing: 0) {
+        tabContent
+            .animation(.none, value: segment)   // instant switch, no flicker
+            .pageLoading(vm.isLoading && allEmpty)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    tabBar
+                    Divider()
+                }
+            }
+            .navigationTitle("Data Protection")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                }
+            }
+            .task { await vm.refresh() }
+            .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+                Button("OK") { vm.errorMessage = nil }
+            } message: { Text(vm.errorMessage ?? "") }
+    }
+
+    private var allEmpty: Bool {
+        vm.snapshotTasks.isEmpty && vm.replication.isEmpty &&
+        vm.cloudSync.isEmpty    && vm.rsyncTasks.isEmpty  &&
+        vm.scrubTasks.isEmpty
+    }
+
+    // MARK: - Tab Bar
+    private var tabBar: some View {
+        ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
+                HStack(spacing: 4) {
                     ForEach(tabs.indices, id: \.self) { i in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { segment = i }
-                        } label: {
-                            Text(tabs[i])
-                                .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                        Button { segment = i } label: {
+                            VStack(spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: tabs[i].icon).font(.caption2)
+                                    Text(tabs[i].label)
+                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                }
                                 .foregroundStyle(segment == i ? .primary : .secondary)
-                                .padding(.horizontal, 16).padding(.vertical, 8)
-                                .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
-                                            in: Capsule())
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+
+                                if segment == i {
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(Color.accentColor)
+                                        .frame(height: 3)
+                                        .matchedGeometryEffect(id: "dpTab", in: tabNS)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(Color.clear).frame(height: 3)
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .id(i)
                     }
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
+                .animation(.spring(response: 0.3, dampingFraction: 0.75), value: segment)
             }
-            .padding(.vertical, 4)
-
-            Divider()
-
-            Group {
-                switch segment {
-                case 0: snapshotsList
-                case 1: replicationList
-                case 2: cloudSyncList
-                case 3: rsyncList
-                default: scrubList
+            .onChange(of: segment) { _, new in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    proxy.scrollTo(new, anchor: .center)
                 }
             }
         }
-        .navigationTitle("Data Protection")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
-            }
+        .padding(.vertical, 2)
+        .background(.bar)
+    }
+
+    // MARK: - Content switcher
+    @ViewBuilder
+    private var tabContent: some View {
+        switch segment {
+        case 0: snapshotsList
+        case 1: replicationList
+        case 2: cloudSyncList
+        case 3: rsyncList
+        default: scrubList
         }
-        .task(id: settings.refreshInterval) {
-            await vm.refresh()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                await vm.refresh()
-            }
-        }
-        .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
-            Button("OK") { vm.errorMessage = nil }
-        } message: { Text(vm.errorMessage ?? "") }
     }
 
     // MARK: - Snapshot Tasks
     private var snapshotsList: some View {
         Group {
-            if vm.isLoading && vm.snapshotTasks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.snapshotTasks.isEmpty {
+            if vm.snapshotTasks.isEmpty {
                 ContentUnavailableView("No Snapshot Tasks",
                     systemImage: "camera.badge.clock",
                     description: Text("No periodic snapshot tasks configured."))
@@ -80,19 +118,21 @@ struct DataProtectionView: View {
         }
     }
 
-    // MARK: - Replication
+    // MARK: - Replication (tappable for detail)
     private var replicationList: some View {
         Group {
-            if vm.isLoading && vm.replication.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.replication.isEmpty {
+            if vm.replication.isEmpty {
                 ContentUnavailableView("No Replication Tasks",
                     systemImage: "arrow.triangle.2.circlepath",
                     description: Text("No replication tasks configured."))
             } else {
                 List(vm.replication) { task in
-                    ReplicationRow(task: task) {
+                    NavigationLink(destination: ReplicationDetailView(task: task) {
                         Task { await vm.runReplication(task) }
+                    }) {
+                        ReplicationRow(task: task) {
+                            Task { await vm.runReplication(task) }
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -101,19 +141,21 @@ struct DataProtectionView: View {
         }
     }
 
-    // MARK: - Cloud Sync
+    // MARK: - Cloud Sync (tappable for detail)
     private var cloudSyncList: some View {
         Group {
-            if vm.isLoading && vm.cloudSync.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.cloudSync.isEmpty {
+            if vm.cloudSync.isEmpty {
                 ContentUnavailableView("No Cloud Sync Tasks",
                     systemImage: "cloud.fill",
                     description: Text("No cloud sync tasks configured."))
             } else {
                 List(vm.cloudSync) { task in
-                    CloudSyncRow(task: task) {
+                    NavigationLink(destination: CloudSyncDetailView(task: task) {
                         Task { await vm.runCloudSync(task) }
+                    }) {
+                        CloudSyncRow(task: task) {
+                            Task { await vm.runCloudSync(task) }
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -125,9 +167,7 @@ struct DataProtectionView: View {
     // MARK: - Rsync
     private var rsyncList: some View {
         Group {
-            if vm.isLoading && vm.rsyncTasks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.rsyncTasks.isEmpty {
+            if vm.rsyncTasks.isEmpty {
                 ContentUnavailableView("No Rsync Tasks",
                     systemImage: "arrow.left.arrow.right",
                     description: Text("No rsync tasks configured."))
@@ -146,9 +186,7 @@ struct DataProtectionView: View {
     // MARK: - Scrub
     private var scrubList: some View {
         Group {
-            if vm.isLoading && vm.scrubTasks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.scrubTasks.isEmpty {
+            if vm.scrubTasks.isEmpty {
                 ContentUnavailableView("No Scrub Tasks",
                     systemImage: "sparkles",
                     description: Text("No scrub tasks configured."))
@@ -163,6 +201,141 @@ struct DataProtectionView: View {
     }
 }
 
+// MARK: - Replication Detail View
+struct ReplicationDetailView: View {
+    let task: ReplicationTask
+    let onRun: () -> Void
+
+    var body: some View {
+        List {
+            Section("Task") {
+                LabeledContent("Name", value: task.name)
+                LabeledContent("Direction", value: task.direction)
+                LabeledContent("Transport", value: task.transport)
+                LabeledContent("Enabled", value: task.enabled ? "Yes" : "No")
+            }
+
+            Section("Paths") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Source", systemImage: task.direction == "PUSH"
+                          ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(task.sourcePath)
+                        .font(.subheadline.monospaced())
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Destination", systemImage: "arrow.right.circle.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(task.targetPath)
+                        .font(.subheadline.monospaced())
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, 2)
+            }
+
+            Section("Schedule & Status") {
+                LabeledContent("Schedule", value: task.schedule)
+                if let lastRun = task.lastRun {
+                    LabeledContent("Last Run") {
+                        Text(lastRun.formatted(.relative(presentation: .named)))
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        RunStatusBadge(status: task.lastRunStatus)
+                    }
+                } else {
+                    Text("No run history").foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Button {
+                    onRun()
+                } label: {
+                    Label("Run Now", systemImage: "play.circle.fill")
+                        .foregroundStyle(task.enabled ? .green : .secondary)
+                }
+                .disabled(!task.enabled)
+            }
+        }
+        .navigationTitle(task.name)
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+    }
+}
+
+// MARK: - Cloud Sync Detail View
+struct CloudSyncDetailView: View {
+    let task: CloudSyncTask
+    let onRun: () -> Void
+
+    private func formatBytes(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .binary)
+    }
+
+    var body: some View {
+        List {
+            Section("Task") {
+                LabeledContent("Description", value: task.description)
+                LabeledContent("Provider", value: task.provider)
+                LabeledContent("Direction", value: task.directionLabel)
+                LabeledContent("Enabled", value: task.enabled ? "Yes" : "No")
+            }
+
+            Section("Path") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Local Path", systemImage: "folder.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(task.path)
+                        .font(.subheadline.monospaced())
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, 2)
+            }
+
+            Section("Schedule & Status") {
+                LabeledContent("Schedule", value: task.schedule)
+                if let lastRun = task.lastRun {
+                    LabeledContent("Last Run") {
+                        Text(lastRun.formatted(.relative(presentation: .named)))
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        RunStatusBadge(status: task.lastRunStatus)
+                    }
+                    if let bytes = task.bytesTransferred {
+                        LabeledContent("Data Transferred", value: formatBytes(bytes))
+                    }
+                } else {
+                    Text("No run history").foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Button {
+                    onRun()
+                } label: {
+                    Label("Run Now", systemImage: "play.circle.fill")
+                        .foregroundStyle(task.enabled ? .green : .secondary)
+                }
+                .disabled(!task.enabled)
+            }
+        }
+        .navigationTitle(task.description)
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+    }
+}
+
 // MARK: - Snapshot Task Row
 private struct SnapshotTaskRow: View {
     let task: SnapshotTask
@@ -170,23 +343,41 @@ private struct SnapshotTaskRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+            Circle()
+                .fill(task.enabled ? Color.green : Color.secondary)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(task.dataset).font(.body.weight(.medium)).lineLimit(1)
+                    Text(task.dataset)
+                        .font(.body.weight(.medium)).lineLimit(1)
                     if !task.enabled {
-                        Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
+                        Label("Disabled", systemImage: "pause.circle")
+                            .labelStyle(.iconOnly).font(.caption).foregroundStyle(.secondary)
                     }
                 }
+
                 HStack(spacing: 8) {
-                    RunStatusBadge(status: task.lastRunStatus)
-                    Text(task.schedule).font(.caption).foregroundStyle(.secondary)
+                    if task.recursive {
+                        Label("Recursive", systemImage: "arrow.turn.down.right")
+                            .labelStyle(.titleOnly).font(.caption2).foregroundStyle(.blue)
+                    }
+                    Text("Keep \(task.lifetime)").font(.caption2).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 8) {
-                    if task.recursive { Text("Recursive").font(.caption2).foregroundStyle(.blue) }
-                    Text("Keep: \(task.lifetime)").font(.caption2).foregroundStyle(.secondary)
+
+                Label(task.schedule, systemImage: "clock")
+                    .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+
+                if let lastRun = task.lastRun {
+                    Text("Last: \(lastRun, style: .relative) ago")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if task.lastRunStatus != .unknown {
+                    RunStatusBadge(status: task.lastRunStatus)
                 }
             }
+
             Spacer()
+
             Button { onRun() } label: {
                 Image(systemName: "play.circle.fill").font(.title3).foregroundStyle(.green)
             }
@@ -196,32 +387,45 @@ private struct SnapshotTaskRow: View {
     }
 }
 
-// MARK: - Replication Row
+// MARK: - Replication Row (compact, for list)
 private struct ReplicationRow: View {
     let task: ReplicationTask
     let onRun: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+            Circle()
+                .fill(task.enabled ? Color.blue : Color.secondary)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    RunStatusBadge(status: task.lastRunStatus)
+                    Text(task.name).font(.body.weight(.medium))
                     Spacer()
-                    if !task.enabled {
-                        Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
-                    }
+                    RunStatusBadge(status: task.lastRunStatus)
                 }
-                Text(task.name).font(.body.weight(.medium))
+
                 HStack(spacing: 4) {
-                    Text(task.sourcePath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
-                    Text(task.targetPath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                    Image(systemName: task.direction == "PUSH"
+                          ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(task.direction == "PUSH" ? .blue : .green)
+                    Text(task.sourcePath)
+                        .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                    Text(task.targetPath)
+                        .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                 }
+
                 HStack(spacing: 8) {
-                    Text(task.transport).font(.caption2).foregroundStyle(.blue)
-                    Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
+                    Text(task.transport)
+                        .font(.caption2).foregroundStyle(.blue)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.blue.opacity(0.1), in: Capsule())
+                    if !task.enabled { Text("Disabled").font(.caption2).foregroundStyle(.secondary) }
                 }
             }
+
             Button { onRun() } label: {
                 Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(.green)
             }
@@ -231,47 +435,51 @@ private struct ReplicationRow: View {
     }
 }
 
-// MARK: - Cloud Sync Row
+// MARK: - Cloud Sync Row (compact, for list)
 private struct CloudSyncRow: View {
     let task: CloudSyncTask
     let onRun: () -> Void
 
+    private func formatBytes(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .binary)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "cloud.fill").foregroundStyle(.blue).frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            Image(systemName: task.directionIcon)
+                .font(.title3)
+                .foregroundStyle(task.direction == "PUSH" ? .blue : .green)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(task.description).font(.body.weight(.medium)).lineLimit(1)
                     Spacer()
                     RunStatusBadge(status: task.lastRunStatus)
                 }
+
                 HStack(spacing: 6) {
-                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(task.direction == "PUSH" ? Color.blue : Color.green)
-                    Text(task.direction == "PUSH" ? "Push" : "Pull")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(task.provider).font(.caption).foregroundStyle(.secondary)
+                    Text(task.directionLabel).font(.caption2).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.quaternary)
+                    Text(task.provider).font(.caption2).foregroundStyle(.secondary)
                     if !task.enabled {
-                        Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
+                        Text("·").foregroundStyle(.quaternary)
+                        Text("Disabled").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
-                Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
-                if let bytes = task.bytesTransferred {
-                    Text("Last transfer: \(formatBytes(bytes))").font(.caption2).foregroundStyle(.secondary)
+
+                if let lastRun = task.lastRun {
+                    Text("Last: \(lastRun, style: .relative) ago")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
+
             Button { onRun() } label: {
                 Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(.green)
             }
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
-    }
-
-    private func formatBytes(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .binary)
     }
 }
 
@@ -282,23 +490,41 @@ private struct RsyncRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.purple).frame(width: 24)
+            Image(systemName: task.direction == "PUSH"
+                  ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                .font(.title3)
+                .foregroundStyle(task.direction == "PUSH" ? .purple : .teal)
+                .frame(width: 28)
+
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(task.path).font(.body.weight(.medium)).lineLimit(1)
                     Spacer()
                     RunStatusBadge(status: task.lastRunStatus)
                 }
-                HStack(spacing: 6) {
-                    Image(systemName: task.direction == "PUSH" ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(task.direction == "PUSH" ? Color.blue : Color.green)
-                    Text(task.remoteHost).font(.caption).foregroundStyle(.secondary)
+
+                HStack(spacing: 4) {
+                    Text(task.remoteHost).font(.caption.monospaced()).foregroundStyle(.secondary)
                     Text(":").foregroundStyle(.tertiary)
-                    Text(task.remotePath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                    Text(task.remotePath)
+                        .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    Label(task.schedule, systemImage: "clock")
+                        .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                    if task.remotePort != 22 {
+                        Text("Port \(task.remotePort)").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if !task.enabled { Text("Disabled").font(.caption2).foregroundStyle(.secondary) }
+                }
+
+                if let lastRun = task.lastRun {
+                    Text("Last: \(lastRun, style: .relative) ago")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
+
             Button { onRun() } label: {
                 Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(.green)
             }
@@ -312,42 +538,53 @@ private struct RsyncRow: View {
 private struct ScrubRow: View {
     let task: ScrubTask
 
+    private func formatDuration(_ secs: TimeInterval) -> String {
+        let s = Int(secs); if s < 60 { return "\(s)s" }
+        let m = s / 60; let rem = s % 60
+        return String(format: "%d:%02d", m, rem)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "sparkles").foregroundStyle(.blue)
                 Text(task.poolName).font(.body.weight(.medium))
                 Spacer()
-                RunStatusBadge(status: task.lastRunStatus)
-            }
-            if task.isRunning, let pct = task.progress {
-                VStack(alignment: .leading, spacing: 2) {
-                    ProgressView(value: pct / 100)
-                        .tint(.blue)
-                    Text(String(format: "%.0f%% complete", pct)).font(.caption2).foregroundStyle(.secondary)
+                if task.isRunning {
+                    Label("Running", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.caption.bold()).foregroundStyle(.blue)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.blue.opacity(0.12), in: Capsule())
+                } else {
+                    RunStatusBadge(status: task.lastRunStatus)
                 }
             }
-            HStack(spacing: 8) {
+
+            if task.isRunning, let pct = task.progress {
+                VStack(alignment: .leading, spacing: 3) {
+                    ProgressView(value: pct / 100).tint(.blue)
+                    Text(String(format: "%.0f%% complete", pct))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Label(task.schedule, systemImage: "clock")
+                    .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 if let run = task.lastRun {
-                    Text("Last: \(run, style: .relative) ago").font(.caption2).foregroundStyle(.secondary)
+                    Text("Last: \(run, style: .relative) ago")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let dur = task.lastRunDuration {
-                    Text("Duration: \(formatDuration(dur))").font(.caption2).foregroundStyle(.secondary)
-                }
-                if !task.enabled {
-                    Image(systemName: "pause.circle").foregroundStyle(.secondary).font(.caption)
+                    Text("(\(formatDuration(dur)))").font(.caption2).foregroundStyle(.tertiary)
                 }
             }
-            Text(task.schedule).font(.caption2).foregroundStyle(.secondary)
+
+            if !task.enabled {
+                Label("Disabled", systemImage: "pause.circle").font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 2)
-    }
-
-    private func formatDuration(_ secs: TimeInterval) -> String {
-        let s = Int(secs)
-        if s < 60 { return "\(s)s" }
-        let m = s / 60; let rem = s % 60
-        return String(format: "%d:%02d", m, rem)
     }
 }
 

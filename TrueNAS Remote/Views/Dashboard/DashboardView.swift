@@ -8,35 +8,55 @@ struct DashboardView: View {
     @Environment(SettingsViewModel.self)  private var settings
 
     private let cols = [GridItem(.flexible()), GridItem(.flexible())]
+    /// Manually managed so it can be cancelled when the tab goes off-screen.
+    @State private var pollingTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 updateBanner
-                alertBanner
+                if settings.showAlertBanner    { alertBanner }
                 systemCard
                 metricsGrid
-                networkCard
-                poolHealthSection
-                temperatureSection
+                if settings.showNetworkCard    { networkCard }
+                if settings.showPoolHealthCard { poolHealthSection }
+                if settings.showTemperatureCard { temperatureSection }
             }
             .padding()
         }
-        .refreshable { await vm.refresh() }
+        .pageLoading(vm.isLoading && vm.systemInfo.memoryTotal == 0)
+        .refreshable {
+            await vm.refresh()
+            await vm.refreshCharts()   // pull-to-refresh also reloads charts immediately
+        }
         .navigationTitle("Dashboard")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
+                // Show spinner while either system info or charts are loading
+                if vm.isLoading || vm.isLoadingCharts {
+                    ProgressView().controlSize(.small)
+                }
             }
         }
-        .task(id: settings.refreshInterval) {
-            // Load dashboard + storage pools in parallel on first launch
-            async let dashRefresh: () = vm.refresh()
-            async let storageRefresh: () = storage.refresh()
-            _ = await (dashRefresh, storageRefresh)
-            while !Task.isCancelled {
+        .onAppear  { startPolling() }
+        .onDisappear { pollingTask?.cancel(); pollingTask = nil }
+    }
+
+    private func startPolling() {
+        guard pollingTask == nil || pollingTask?.isCancelled == true else { return }
+        pollingTask = Task {
+            // Fast path: system.info first, then fire chart refresh in background
+            await vm.refresh()
+            // Load pool health data if the card is visible and pools haven't been fetched yet.
+            // Using a lightweight "pools only" fetch to avoid triggering the full disk scan.
+            if settings.showPoolHealthCard && storage.pools.isEmpty {
+                Task { await storage.refreshPoolsOnly() }
+            }
+            // Polling loop — only runs while tab is visible and auto-refresh is enabled
+            while !Task.isCancelled && settings.refreshInterval > 0 {
                 try? await Task.sleep(for: .seconds(settings.refreshInterval))
+                guard !Task.isCancelled else { return }
                 await vm.refresh()
             }
         }
@@ -136,53 +156,27 @@ struct DashboardView: View {
     // MARK: - CPU + RAM Grid
     private var metricsGrid: some View {
         LazyVGrid(columns: cols, spacing: 12) {
-            NavigationLink(destination: MetricDetailView(
-                title: "CPU Usage",
-                icon: "cpu",
-                color: cpuColor(vm.systemInfo.cpuUsage),
-                headline: String(format: "%.1f%%", vm.systemInfo.cpuUsage),
-                subtitle: "Current load",
-                history: vm.cpuHistory,
-                yLabel: "CPU %",
-                yDomain: 0...100
-            )) {
+            NavigationLink(destination: CPUDetailView(vm: vm)) {
                 ringCard(value: vm.systemInfo.cpuUsage / 100, label: "CPU",
                          color: cpuColor(vm.systemInfo.cpuUsage),
-                         sub: String(format: "%.1f%%", vm.systemInfo.cpuUsage),
-                         history: vm.cpuHistory)
+                         sub: String(format: "%.1f%%", vm.systemInfo.cpuUsage))
             }
             .buttonStyle(.plain)
 
-            NavigationLink(destination: MetricDetailView(
-                title: "Memory",
-                icon: "memorychip",
-                color: ramColor(vm.systemInfo.memoryUsedFraction),
-                headline: vm.systemInfo.formattedMemory,
-                subtitle: String(format: "%.0f%% used", vm.systemInfo.memoryUsedFraction * 100),
-                history: nil,
-                yLabel: "GB",
-                yDomain: nil
-            )) {
+            NavigationLink(destination: MemoryDetailView(vm: vm)) {
                 ringCard(value: vm.systemInfo.memoryUsedFraction, label: "RAM",
-                         color: ramColor(vm.systemInfo.memoryUsedFraction),
-                         sub: vm.systemInfo.formattedMemory,
-                         history: nil)
+                         color: .purple,
+                         sub: vm.systemInfo.formattedMemory)
             }
             .buttonStyle(.plain)
         }
     }
 
-    @ViewBuilder
-    private func ringCard(value: Double, label: String, color: Color, sub: String, history: [ReportingPoint]?) -> some View {
+    // Sparklines are in CPUDetailView / MemoryDetailView, not on the dashboard cards.
+    private func ringCard(value: Double, label: String, color: Color, sub: String) -> some View {
         VStack(spacing: 8) {
             CircularProgressRing(value: value, label: label, color: color)
                 .frame(height: 110)
-            if let h = history, !h.isEmpty {
-                MiniSparkline(points: h.map(\.value), color: color)
-                    .frame(height: 28)
-            } else {
-                Color.clear.frame(height: 28)
-            }
             Text(sub)
                 .font(.caption2).foregroundStyle(.secondary)
                 .lineLimit(1).minimumScaleFactor(0.7)
@@ -307,17 +301,16 @@ struct DashboardView: View {
                         }
                     }
                     TemperatureChartView(data: vm.temperatures)
+                        .clipped()
                 }
             }
         }
     }
 
     // MARK: - Color helpers
+    // CPU changes color with load; RAM stays purple (high usage is normal with ZFS ARC)
     private func cpuColor(_ pct: Double) -> Color {
         pct > 85 ? .red : pct > 60 ? .orange : .blue
-    }
-    private func ramColor(_ frac: Double) -> Color {
-        frac > 0.9 ? .red : frac > 0.75 ? .orange : .purple
     }
 }
 
@@ -392,7 +385,7 @@ struct MetricDetailView: View {
             }
         }
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
     }
 }
@@ -467,8 +460,318 @@ struct SystemSummaryDetailView: View {
             }
         }
         .navigationTitle(vm.systemInfo.hostname)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+    }
+}
+
+// MARK: - CPU Detail View
+struct CPUDetailView: View {
+    let vm: DashboardViewModel
+
+    private var color: Color {
+        vm.systemInfo.cpuUsage > 85 ? .red : vm.systemInfo.cpuUsage > 60 ? .orange : .blue
+    }
+
+    var body: some View {
+        List {
+            // Current usage header
+            Section {
+                HStack(spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 8)
+                        Circle()
+                            .trim(from: 0, to: vm.systemInfo.cpuUsage / 100)
+                            .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 56, height: 56)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(String(format: "%.1f%%", vm.systemInfo.cpuUsage))
+                            .font(.title.bold().monospacedDigit())
+                            .foregroundStyle(color)
+                        Text("Current CPU Usage")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Load averages
+            Section("Load Average") {
+                cpuLoadRow("1 Minute",   value: vm.systemInfo.loadAvg1)
+                cpuLoadRow("5 Minutes",  value: vm.systemInfo.loadAvg5)
+                cpuLoadRow("15 Minutes", value: vm.systemInfo.loadAvg15)
+            }
+
+            // CPU history chart
+            if !vm.cpuHistory.isEmpty {
+                Section("1-Hour History") {
+                    Chart {
+                        ForEach(Array(vm.cpuHistory.enumerated()), id: \.offset) { _, pt in
+                            LineMark(x: .value("Time", pt.time), y: .value("CPU %", pt.value))
+                                .foregroundStyle(color)
+                                .interpolationMethod(.catmullRom)
+                            AreaMark(x: .value("Time", pt.time), y: .value("CPU %", pt.value))
+                                .foregroundStyle(color.opacity(0.15))
+                                .interpolationMethod(.catmullRom)
+                        }
+                    }
+                    .chartYScale(domain: 0...100)
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .minute, count: 15)) { _ in
+                            AxisGridLine()
+                            AxisValueLabel(format: .dateTime.hour().minute())
+                        }
+                    }
+                    .chartYAxis {
+                        AxisMarks { v in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let d = v.as(Double.self) {
+                                    Text(String(format: "%.0f%%", d)).font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 160)
+                    .padding(.vertical, 4)
+                }
+            }
+
+            // Temperature
+            if !vm.temperatures.isEmpty {
+                Section("CPU Temperature") {
+                    if let latest = vm.temperatures.last {
+                        HStack {
+                            Text("Current")
+                            Spacer()
+                            Text(String(format: "%.0f °C", latest.value))
+                                .fontWeight(.medium).monospacedDigit()
+                                .foregroundStyle(latest.value > 80 ? .red : latest.value > 60 ? .orange : .primary)
+                        }
+                    }
+                    Chart {
+                        ForEach(Array(vm.temperatures.enumerated()), id: \.offset) { _, pt in
+                            LineMark(x: .value("Time", pt.time), y: .value("°C", pt.value))
+                                .foregroundStyle(.orange)
+                                .interpolationMethod(.catmullRom)
+                            AreaMark(x: .value("Time", pt.time), y: .value("°C", pt.value))
+                                .foregroundStyle(.orange.opacity(0.15))
+                                .interpolationMethod(.catmullRom)
+                        }
+                    }
+                    .chartXAxis(.hidden)
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { v in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let d = v.as(Double.self) {
+                                    Text(String(format: "%.0f°", d)).font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 100)
+                    .clipped()
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle("CPU Details")
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+    }
+
+    private func cpuLoadRow(_ label: String, value: Double) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(String(format: "%.2f", value))
+                .fontWeight(.medium).monospacedDigit()
+                .foregroundStyle(value > 4 ? .red : value > 2 ? .orange : .primary)
+        }
+    }
+}
+
+// MARK: - Memory Detail View
+struct MemoryDetailView: View {
+    let vm: DashboardViewModel
+
+    private var appsUsed: Int64 {
+        max(0, vm.systemInfo.memoryUsed - vm.systemInfo.memoryZFSCache)
+    }
+    private var arcUsed:  Int64 { vm.systemInfo.memoryZFSCache }
+    private var free:     Int64 { max(0, vm.systemInfo.memoryTotal - vm.systemInfo.memoryUsed) }
+    private var total:    Int64 { vm.systemInfo.memoryTotal }
+
+    private func frac(_ bytes: Int64) -> Double {
+        guard total > 0 else { return 0 }
+        return Double(bytes) / Double(total)
+    }
+
+    private func fmt(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .binary)
+    }
+
+    private var ramColor: Color {
+        vm.systemInfo.memoryUsedFraction > 0.9 ? .red
+            : vm.systemInfo.memoryUsedFraction > 0.75 ? .orange : .purple
+    }
+
+    var body: some View {
+        List {
+            // Header
+            Section {
+                HStack(spacing: 16) {
+                    Image(systemName: "memorychip")
+                        .font(.largeTitle).foregroundStyle(ramColor)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(vm.systemInfo.formattedMemory)
+                            .font(.title2.bold().monospacedDigit())
+                            .foregroundStyle(ramColor)
+                        Text(String(format: "%.0f%% used", vm.systemInfo.memoryUsedFraction * 100))
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Breakdown
+            Section("Memory Breakdown") {
+                memRow("Apps & OS",      bytes: appsUsed, color: .blue)
+                if arcUsed > 0 {
+                    memRow("ZFS ARC Cache", bytes: arcUsed, color: .orange)
+                }
+                memRow("Free",           bytes: free,     color: .green)
+
+                // Stacked colour bar
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    ZStack(alignment: .leading) {
+                        // Layer 1: green background (free)
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.green.opacity(0.55))
+                        // Layer 2: orange up to total-used (ARC sits here)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: max(0, w * frac(vm.systemInfo.memoryUsed)))
+                        // Layer 3: blue up to apps used
+                        Rectangle()
+                            .fill(Color.blue)
+                            .frame(width: max(0, w * frac(appsUsed)))
+                    }
+                    .frame(height: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .frame(height: 12)
+                .padding(.vertical, 4)
+            }
+
+            // Memory usage history
+            if !vm.memoryHistory.isEmpty {
+                Section("Usage History (1h)") {
+                    Chart {
+                        ForEach(Array(vm.memoryHistory.enumerated()), id: \.offset) { _, pt in
+                            LineMark(
+                                x: .value("Time", pt.time),
+                                y: .value("GB",   pt.value / 1e9)
+                            )
+                            .foregroundStyle(ramColor)
+                            .interpolationMethod(.catmullRom)
+                            AreaMark(
+                                x: .value("Time", pt.time),
+                                y: .value("GB",   pt.value / 1e9)
+                            )
+                            .foregroundStyle(ramColor.opacity(0.15))
+                            .interpolationMethod(.catmullRom)
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .minute, count: 15)) { _ in
+                            AxisGridLine()
+                            AxisValueLabel(format: .dateTime.hour().minute())
+                        }
+                    }
+                    .chartYAxis {
+                        AxisMarks { v in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let d = v.as(Double.self) {
+                                    Text(String(format: "%.1f GB", d)).font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 160)
+                    .padding(.vertical, 4)
+                }
+            }
+
+            // ZFS ARC history
+            if !vm.arcHistory.isEmpty {
+                Section("ZFS ARC History (1h)") {
+                    if arcUsed > 0 {
+                        HStack {
+                            Text("Current ARC Size")
+                            Spacer()
+                            Text(fmt(arcUsed))
+                                .fontWeight(.medium).monospacedDigit()
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Chart {
+                        ForEach(Array(vm.arcHistory.enumerated()), id: \.offset) { _, pt in
+                            LineMark(
+                                x: .value("Time", pt.time),
+                                y: .value("GB",   pt.value / 1e9)
+                            )
+                            .foregroundStyle(Color.orange)
+                            .interpolationMethod(.catmullRom)
+                            AreaMark(
+                                x: .value("Time", pt.time),
+                                y: .value("GB",   pt.value / 1e9)
+                            )
+                            .foregroundStyle(Color.orange.opacity(0.15))
+                            .interpolationMethod(.catmullRom)
+                        }
+                    }
+                    .chartXAxis(.hidden)
+                    .chartYAxis {
+                        AxisMarks { v in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let d = v.as(Double.self) {
+                                    Text(String(format: "%.1f GB", d)).font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 100)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle("Memory Details")
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+    }
+
+    private func memRow(_ label: String, bytes: Int64, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 10, height: 10)
+            Text(label)
+            Spacer()
+            Text(fmt(bytes))
+                .foregroundStyle(.secondary).monospacedDigit()
+            Text(String(format: "(%.0f%%)", frac(bytes) * 100))
+                .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
+        }
     }
 }
 

@@ -6,68 +6,97 @@ struct SystemView: View {
     @Environment(SettingsViewModel.self)   private var settings
     @State private var segment = 0  // 0=Alerts 1=Boot 2=Users 3=Certs 4=Audit 5=Update
 
-    private let tabs = ["Alerts", "Boot Envs", "Users", "Certs", "Audit", "Update"]
+    private let tabs: [(label: String, icon: String)] = [
+        ("Alerts",    "bell.fill"),
+        ("Boot Envs", "cylinder.fill"),
+        ("Users",     "person.2.fill"),
+        ("Certs",     "lock.shield.fill"),
+        ("Audit",     "doc.text.magnifyingglass"),
+        ("Update",    "arrow.up.circle.fill"),
+    ]
+    @Namespace private var tabNS
 
     var body: some View {
-        VStack(spacing: 0) {
+        tabContent
+            .animation(.none, value: segment)   // instant switch, no flicker
+            .pageLoading(vm.isLoading && vm.alerts.isEmpty && vm.users.isEmpty)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    tabBar
+                    Divider()
+                }
+            }
+            .navigationTitle("System")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                }
+            }
+            .task { await vm.refresh() }
+    }
+
+    @ViewBuilder private var tabContent: some View {
+        switch segment {
+        case 0: alertsView
+        case 1: bootEnvsView
+        case 2: usersView
+        case 3: certsView
+        case 4: auditView
+        default: updateView
+        }
+    }
+
+    private var tabBar: some View {
+        ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
+                HStack(spacing: 4) {
                     ForEach(tabs.indices, id: \.self) { i in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { segment = i }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(tabs[i])
-                                    .font(.subheadline.weight(segment == i ? .semibold : .regular))
-                                    .foregroundStyle(segment == i ? .primary : .secondary)
-                                if i == 0 && vm.criticalCount > 0 {
-                                    Text("\(vm.criticalCount)")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5).padding(.vertical, 2)
-                                        .background(Color.red, in: Capsule())
+                        Button { segment = i } label: {
+                            VStack(spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: tabs[i].icon).font(.caption2)
+                                    Text(tabs[i].label)
+                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                    // Alerts badge
+                                    if i == 0 && vm.criticalCount > 0 {
+                                        Text("\(vm.criticalCount)")
+                                            .font(.caption2.bold()).foregroundStyle(.white)
+                                            .padding(.horizontal, 5).padding(.vertical, 2)
+                                            .background(Color.red, in: Capsule())
+                                    }
+                                    // Update dot
+                                    if i == 5 && dashboard.systemInfo.updateAvailable {
+                                        Circle().fill(Color.blue).frame(width: 7, height: 7)
+                                    }
                                 }
-                                if i == 5 && dashboard.systemInfo.updateAvailable {
-                                    Circle().fill(Color.blue).frame(width: 7, height: 7)
+                                .foregroundStyle(segment == i ? .primary : .secondary)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+
+                                if segment == i {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor)
+                                        .frame(height: 3)
+                                        .matchedGeometryEffect(id: "sysTab", in: tabNS)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.clear).frame(height: 3)
                                 }
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .background(segment == i ? Color.accentColor.opacity(0.12) : Color.clear,
-                                        in: Capsule())
                         }
+                        .buttonStyle(.plain)
+                        .id(i)
                     }
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
+                .animation(.spring(response: 0.3, dampingFraction: 0.75), value: segment)
             }
-            .padding(.vertical, 4)
-
-            Divider()
-
-            Group {
-                switch segment {
-                case 0: alertsView
-                case 1: bootEnvsView
-                case 2: usersView
-                case 3: certsView
-                case 4: auditView
-                default: updateView
+            .onChange(of: segment) { _, new in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    proxy.scrollTo(new, anchor: .center)
                 }
             }
         }
-        .navigationTitle("System")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
-            }
-        }
-        .task(id: settings.refreshInterval) {
-            await vm.refresh()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                await vm.refresh()
-            }
-        }
+        .padding(.vertical, 2)
+        .background(.bar)
     }
 
     // MARK: - Alerts

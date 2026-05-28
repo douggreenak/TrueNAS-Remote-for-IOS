@@ -1,5 +1,34 @@
 import SwiftUI
 
+// MARK: - Page loading overlay
+/// Drops an opaque full-screen spinner over any view while isLoading is true.
+/// Use `.pageLoading(vm.isLoading && vm.data.isEmpty)` so pull-to-refresh
+/// (when data already exists) doesn't cover existing content.
+struct PageLoadingModifier: ViewModifier {
+    let isLoading: Bool
+    func body(content: Content) -> some View {
+        content.overlay {
+            if isLoading {
+                ZStack {
+                    Color(.systemBackground).ignoresSafeArea()
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.large)
+                        .tint(.secondary)
+                }
+                .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+            }
+        }
+    }
+}
+
+extension View {
+    func pageLoading(_ isLoading: Bool) -> some View {
+        modifier(PageLoadingModifier(isLoading: isLoading))
+    }
+}
+
+// MARK: - Status dot
 struct StatusDot: View {
     let color: Color
     var size: CGFloat = 10
@@ -27,11 +56,13 @@ struct HealthBadge: View {
 struct RunStatusBadge: View {
     let status: TaskRunStatus
     var body: some View {
-        Label(status.label, systemImage: status.icon)
-            .font(.caption.bold())
-            .foregroundStyle(status.color)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(status.color.opacity(0.12), in: Capsule())
+        if status != .unknown {
+            Label(status.label, systemImage: status.icon)
+                .font(.caption.bold())
+                .foregroundStyle(status.color)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(status.color.opacity(0.12), in: Capsule())
+        }
     }
 }
 

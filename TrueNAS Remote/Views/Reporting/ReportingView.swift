@@ -7,8 +7,51 @@ struct ReportingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                // Time range picker
+            VStack(spacing: 12) {
+                ReportingChartCard(title: "CPU Usage", icon: "cpu", unit: "%",
+                                   series: vm.cpuSeries, yDomain: 0...100,
+                                   timeRange: vm.selectedRange)
+                ReportingChartCard(title: "System Load", icon: "gauge.with.dots.needle.bottom.50percent", unit: "",
+                                   series: vm.loadSeries, timeRange: vm.selectedRange)
+                ReportingChartCard(title: "Memory", icon: "memorychip", unit: " GB",
+                                   series: vm.memorySeries.map { s in
+                                       ReportingSeries(name: s.name,
+                                                       points: s.points.map {
+                                                           ReportingPoint(time: $0.time, value: $0.value / 1e9)
+                                                       })
+                                   }, timeRange: vm.selectedRange)
+                ReportingChartCard(title: "Network I/O", icon: "network", unit: " MB/s",
+                                   series: vm.networkSeries.map { s in
+                                       ReportingSeries(name: s.name,
+                                                       points: s.points.map {
+                                                           ReportingPoint(time: $0.time, value: $0.value / 1e6)
+                                                       })
+                                   }, timeRange: vm.selectedRange)
+                ReportingChartCard(title: "ZFS ARC Size", icon: "cylinder.split.1x2.fill", unit: " GB",
+                                   series: vm.arcSeries.prefix(1).map { s in
+                                       ReportingSeries(name: s.name,
+                                                       points: s.points.map {
+                                                           ReportingPoint(time: $0.time, value: $0.value / 1e9)
+                                                       })
+                                   }, timeRange: vm.selectedRange)
+                ReportingChartCard(title: "CPU Temperature", icon: "thermometer.medium", unit: " °C",
+                                   series: vm.tempSeries, timeRange: vm.selectedRange)
+                if !vm.diskSeries.isEmpty {
+                    ReportingChartCard(title: "Disk I/O", icon: "internaldrive", unit: " MB/s",
+                                       series: vm.diskSeries.map { s in
+                                           ReportingSeries(name: s.name,
+                                                           points: s.points.map {
+                                                               ReportingPoint(time: $0.time, value: $0.value / 1e6)
+                                                           })
+                                       }, timeRange: vm.selectedRange)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical)
+        }
+        .pageLoading(vm.isLoading && vm.cpuSeries.isEmpty)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
                 Picker("Range", selection: Bindable(vm).selectedRange) {
                     ForEach(ReportingViewModel.TimeRange.allCases, id: \.self) { r in
                         Text(r.label).tag(r)
@@ -16,52 +59,13 @@ struct ReportingView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
-
-                VStack(spacing: 12) {
-                    ReportingChartCard(title: "CPU Usage", icon: "cpu", unit: "%",
-                                       series: vm.cpuSeries, yDomain: 0...100,
-                                       timeRange: vm.selectedRange)
-                    ReportingChartCard(title: "System Load", icon: "gauge.with.dots.needle.bottom.50percent", unit: "",
-                                       series: vm.loadSeries, timeRange: vm.selectedRange)
-                    ReportingChartCard(title: "Memory", icon: "memorychip", unit: " GB",
-                                       series: vm.memorySeries.map { s in
-                                           ReportingSeries(name: s.name,
-                                                           points: s.points.map {
-                                                               ReportingPoint(time: $0.time, value: $0.value / 1e9)
-                                                           })
-                                       }, timeRange: vm.selectedRange)
-                    ReportingChartCard(title: "Network I/O", icon: "network", unit: " MB/s",
-                                       series: vm.networkSeries.map { s in
-                                           ReportingSeries(name: s.name,
-                                                           points: s.points.map {
-                                                               ReportingPoint(time: $0.time, value: $0.value / 1e6)
-                                                           })
-                                       }, timeRange: vm.selectedRange)
-                    ReportingChartCard(title: "ZFS ARC Size", icon: "cylinder.split.1x2.fill", unit: " GB",
-                                       series: vm.arcSeries.prefix(1).map { s in
-                                           ReportingSeries(name: s.name,
-                                                           points: s.points.map {
-                                                               ReportingPoint(time: $0.time, value: $0.value / 1e9)
-                                                           })
-                                       }, timeRange: vm.selectedRange)
-                    ReportingChartCard(title: "CPU Temperature", icon: "thermometer.medium", unit: " °C",
-                                       series: vm.tempSeries, timeRange: vm.selectedRange)
-                    if !vm.diskSeries.isEmpty {
-                        ReportingChartCard(title: "Disk I/O", icon: "internaldrive", unit: " MB/s",
-                                           series: vm.diskSeries.map { s in
-                                               ReportingSeries(name: s.name,
-                                                               points: s.points.map {
-                                                                   ReportingPoint(time: $0.time, value: $0.value / 1e6)
-                                                               })
-                                           }, timeRange: vm.selectedRange)
-                    }
-                }
-                .padding(.horizontal)
+                .padding(.vertical, 10)
+                Divider()
             }
-            .padding(.vertical)
+            .background(.bar)
         }
         .navigationTitle("Reporting")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 if vm.isLoading { ProgressView().controlSize(.small) }

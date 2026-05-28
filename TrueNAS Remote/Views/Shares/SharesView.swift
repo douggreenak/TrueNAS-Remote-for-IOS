@@ -5,41 +5,83 @@ struct SharesView: View {
     @Environment(SettingsViewModel.self) private var settings
     @State private var segment = 0   // 0=SMB 1=NFS 2=iSCSI
 
-    var body: some View {
-        VStack(spacing: 0) {
-            Picker("Share Type", selection: $segment) {
-                Text("SMB").tag(0)
-                Text("NFS").tag(1)
-                Text("iSCSI").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 8)
+    private let tabs: [(label: String, icon: String)] = [
+        ("SMB",   "pc"),
+        ("NFS",   "server.rack"),
+        ("iSCSI", "externaldrive.connected.to.line.below.fill"),
+    ]
+    @Namespace private var tabNS
 
-            Group {
-                switch segment {
-                case 0: smbList
-                case 1: nfsList
-                default: iscsiList
+    var body: some View {
+        tabContent
+            .animation(.none, value: segment)   // instant switch, no flicker
+            .pageLoading(vm.isLoading && vm.smbShares.isEmpty && vm.nfsShares.isEmpty)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    tabBar
+                    Divider()
+                }
+            }
+            .navigationTitle("Shares")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                }
+            }
+            .task { await vm.refresh() }
+            .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+                Button("OK") { vm.errorMessage = nil }
+            } message: { Text(vm.errorMessage ?? "") }
+    }
+
+    @ViewBuilder private var tabContent: some View {
+        switch segment {
+        case 0: smbList
+        case 1: nfsList
+        default: iscsiList
+        }
+    }
+
+    private var tabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(tabs.indices, id: \.self) { i in
+                        Button { segment = i } label: {
+                            VStack(spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: tabs[i].icon).font(.caption2)
+                                    Text(tabs[i].label)
+                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                }
+                                .foregroundStyle(segment == i ? .primary : .secondary)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+
+                                if segment == i {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor)
+                                        .frame(height: 3)
+                                        .matchedGeometryEffect(id: "shrTab", in: tabNS)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.clear).frame(height: 3)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .animation(.spring(response: 0.3, dampingFraction: 0.75), value: segment)
+            }
+            .onChange(of: segment) { _, new in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    proxy.scrollTo(new, anchor: .center)
                 }
             }
         }
-        .navigationTitle("Shares")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
-            }
-        }
-        .task(id: settings.refreshInterval) {
-            await vm.refresh()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                await vm.refresh()
-            }
-        }
-        .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
-            Button("OK") { vm.errorMessage = nil }
-        } message: { Text(vm.errorMessage ?? "") }
+        .padding(.vertical, 2)
+        .background(.bar)
     }
 
     // MARK: - SMB

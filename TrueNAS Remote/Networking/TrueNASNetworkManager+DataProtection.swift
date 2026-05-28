@@ -37,13 +37,17 @@ extension TrueNASNetworkManager {
         }
         let raws = try await call(method: "pool.snapshottask.query", as: [Raw].self)
         return raws.map { r in
-            let life = "\(r.lifetime_value ?? 2) \(r.lifetime_unit ?? "WEEKS")"
-            return SnapshotTask(id: r.id, dataset: r.dataset,
-                                recursive: r.recursive ?? false,
-                                lifetime: life,
-                                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
-                                enabled: r.enabled ?? true,
-                                lastRunStatus: .unknown, lastRun: nil)
+            let lifetimeValue = r.lifetime_value ?? 2
+            let lifetimeUnit  = (r.lifetime_unit ?? "WEEKS").lowercased()
+            let life = "\(lifetimeValue) \(lifetimeUnit)"
+            return SnapshotTask(
+                id: r.id, dataset: r.dataset,
+                recursive: r.recursive ?? false,
+                lifetime: life,
+                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute,
+                                         dow: r.schedule?.dow, dom: r.schedule?.dom),
+                enabled: r.enabled ?? true,
+                lastRunStatus: .unknown, lastRun: nil)
         }
     }
 
@@ -60,7 +64,10 @@ extension TrueNASNetworkManager {
             let direction: String?; let transport: String?
             let schedule: ScheduleRaw?; let enabled: Bool?
             let state: StateRaw?
-            struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
+            struct ScheduleRaw: Decodable {
+                let hour: String?; let minute: String?
+                let dow: String?; let dom: String?
+            }
             struct StateRaw: Decodable { let state: String?; let datetime: TaskBSONDate? }
         }
         let raws = try await call(method: "replication.query", as: [Raw].self)
@@ -71,7 +78,8 @@ extension TrueNASNetworkManager {
                 targetPath: r.targetDataset ?? "—",
                 direction: r.direction ?? "PUSH",
                 transport: r.transport ?? "SSH",
-                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
+                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute,
+                                         dow: r.schedule?.dow, dom: r.schedule?.dom),
                 enabled: r.enabled ?? true,
                 lastRunStatus: TaskRunStatus(rawValue: r.state?.state ?? "") ?? .unknown,
                 lastRun: r.state?.datetime?.date
@@ -92,7 +100,10 @@ extension TrueNASNetworkManager {
             let schedule: ScheduleRaw?; let enabled: Bool?
             let job: JobRaw?
             struct CredsRaw: Decodable { let name: String? }
-            struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
+            struct ScheduleRaw: Decodable {
+                let hour: String?; let minute: String?
+                let dow: String?; let dom: String?
+            }
             struct JobRaw: Decodable { let state: String?; let timeStarted: TaskBSONDate? }
         }
         return try await call(method: "cloudsync.query", as: [Raw].self).map { r in
@@ -100,7 +111,8 @@ extension TrueNASNetworkManager {
                 id: r.id, description: r.description ?? "Cloud Sync \(r.id)",
                 direction: r.direction ?? "PUSH", path: r.path ?? "—",
                 provider: r.credentials?.name ?? "—",
-                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
+                schedule: scheduleString(r.schedule?.hour, r.schedule?.minute,
+                                         dow: r.schedule?.dow, dom: r.schedule?.dom),
                 enabled: r.enabled ?? true,
                 lastRunStatus: TaskRunStatus(rawValue: r.job?.state ?? "") ?? .unknown,
                 lastRun: r.job?.timeStarted?.date,
@@ -120,14 +132,18 @@ extension TrueNASNetworkManager {
             let id: Int; let path: String?; let remotehost: String?
             let remoteport: Int?; let remotepath: String?; let direction: String?
             let schedule: ScheduleRaw?; let enabled: Bool?; let job: JobRaw?
-            struct ScheduleRaw: Decodable { let hour: String?; let minute: String? }
+            struct ScheduleRaw: Decodable {
+                let hour: String?; let minute: String?
+                let dow: String?; let dom: String?
+            }
             struct JobRaw: Decodable { let state: String?; let timeStarted: TaskBSONDate? }
         }
         return try await call(method: "rsynctask.query", as: [Raw].self).map { r in
             RsyncTask(id: r.id, path: r.path ?? "—", remoteHost: r.remotehost ?? "—",
                       remotePort: r.remoteport ?? 22, remotePath: r.remotepath ?? "—",
                       direction: r.direction ?? "PUSH",
-                      schedule: scheduleString(r.schedule?.hour, r.schedule?.minute),
+                      schedule: scheduleString(r.schedule?.hour, r.schedule?.minute,
+                                               dow: r.schedule?.dow, dom: r.schedule?.dom),
                       enabled: r.enabled ?? true,
                       lastRunStatus: TaskRunStatus(rawValue: r.job?.state ?? "") ?? .unknown,
                       lastRun: r.job?.timeStarted?.date)
@@ -167,14 +183,62 @@ extension TrueNASNetworkManager {
     }
 
     // MARK: - Schedule helper
-    private func scheduleString(_ hour: String?, _ minute: String?) -> String {
-        guard let h = hour, let m = minute else { return "—" }
+    private func scheduleString(
+        _ hour: String?, _ minute: String?,
+        dow: String? = nil, dom: String? = nil
+    ) -> String {
+        guard let h = hour, let m = minute, !h.isEmpty, !m.isEmpty else { return "—" }
+
+        // Every-minute / every-hour shortcuts
         if h == "*" && m == "*" { return "Every minute" }
-        if h == "*"             { return "Every hour at :\(m)" }
+        if h == "*" {
+            let mInt = Int(m) ?? 0
+            return "Every hour at :\(String(format: "%02d", mInt))"
+        }
+
+        // Build time string (12-hour)
         let hInt = Int(h) ?? 0
-        let mPad = m.count == 1 ? "0\(m)" : m
+        let mInt = Int(m) ?? 0
         let ampm = hInt >= 12 ? "PM" : "AM"
         let h12  = hInt == 0 ? 12 : (hInt > 12 ? hInt - 12 : hInt)
-        return "Daily at \(h12):\(mPad) \(ampm)"
+        let timeStr = "\(h12):\(String(format: "%02d", mInt)) \(ampm)"
+
+        // Day-of-week names
+        let dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+        // Named dow (e.g. "1", "1,3,5", "1-5")
+        if let d = dow, d != "*", d != "?" {
+            let days = d.split(separator: ",").compactMap { part -> String? in
+                let s = part.trimmingCharacters(in: .whitespaces)
+                if let idx = Int(s), idx < 7 { return dayNames[idx] }
+                // Handle ranges like "1-5"
+                if s.contains("-") {
+                    let bounds = s.split(separator: "-").compactMap { Int($0) }
+                    if bounds.count == 2 {
+                        if bounds[0] == 1 && bounds[1] == 5 { return "Weekdays" }
+                        if bounds[0] == 0 && bounds[1] == 6 { return "Daily" }
+                    }
+                }
+                return nil
+            }
+            if !days.isEmpty {
+                let dayLabel = days.count == 1 ? days[0] : days.joined(separator: "/")
+                return "\(dayLabel) at \(timeStr)"
+            }
+        }
+
+        // Day-of-month (e.g. "1" = 1st of month)
+        if let dm = dom, dm != "*", dm != "?", let day = Int(dm) {
+            let suffix: String
+            switch day % 10 {
+            case 1 where day != 11: suffix = "st"
+            case 2 where day != 12: suffix = "nd"
+            case 3 where day != 13: suffix = "rd"
+            default: suffix = "th"
+            }
+            return "Monthly on the \(day)\(suffix) at \(timeStr)"
+        }
+
+        return "Daily at \(timeStr)"
     }
 }

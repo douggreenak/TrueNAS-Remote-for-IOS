@@ -87,8 +87,20 @@ actor TrueNASNetworkManager {
         try await _ensureConnected()
     }
 
+    /// Pre-warms the WebSocket connection in the background.
+    /// Call on app launch (when credentials exist) so the first data fetch
+    /// doesn't pay the full connection + TLS + auth cost.
+    nonisolated func preconnect() {
+        Task { try? await self._ensureConnected() }
+    }
+
     /// Raw JSON-RPC call. `params` is a pre-serialised JSON array (e.g. `Data("[42]")`).
     /// Pass `nil` for methods that take no parameters — an empty array `[]` is sent.
+    ///
+    /// A per-call timeout (`callTimeout`) is enforced independently of the URLSession
+    /// timeout. Any call that receives no server response within that window is failed
+    /// with a `.connectionFailed("Timed out: …")` error so a single slow or missing
+    /// response can never block the app indefinitely.
     @discardableResult
     func call(method: String, params: Data? = nil) async throws -> Data {
         try await _ensureConnected()
@@ -109,12 +121,24 @@ actor TrueNASNetworkManager {
 
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
+            // Per-request timeout — resumes the continuation with an error if the
+            // server never responds. _fail() is a no-op when the response already
+            // arrived (continuation was removed from `pending` by _receiveLoop).
+            Task {
+                do { try await Task.sleep(for: .seconds(Self.callTimeout)) }
+                catch { return }   // Task was cancelled — skip the timeout
+                await self._fail(id: id, err: .connectionFailed("Timed out: \(method)"))
+            }
             ws.send(.string(msgStr)) { error in
                 guard let error else { return }
                 Task { await self._fail(id: id, err: .connectionFailed(error.localizedDescription)) }
             }
         }
     }
+
+    /// Per-request timeout in seconds. Generous enough for heavyweight
+    /// `reporting.get_data` calls while still bounding any hung request.
+    private static let callTimeout: Double = 15
 
     /// Typed JSON-RPC call — decodes the `result` field directly to `T`.
     func call<T: Decodable>(method: String, params: Data? = nil, as type: T.Type = T.self) async throws -> T {

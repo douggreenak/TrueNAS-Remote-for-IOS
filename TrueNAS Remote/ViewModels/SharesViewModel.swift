@@ -13,6 +13,7 @@ class SharesViewModel {
     private let network = TrueNASNetworkManager.shared
 
     func refresh() async {
+        guard !isLoading else { return }
         isLoading = true; errorMessage = nil
         defer { isLoading = false }
         do {

@@ -5,45 +5,94 @@ struct StorageRootView: View {
     @Environment(SettingsViewModel.self) private var settings
     @State private var segment = 0   // 0=Pools 1=Disks 2=Datasets
     @State private var diskSearch = ""
+    @State private var collapsedDatasets: Set<String> = []
+
+    private let tabs: [(label: String, icon: String)] = [
+        ("Pools",    "cylinder.split.1x2.fill"),
+        ("Disks",    "internaldrive"),
+        ("Datasets", "folder.fill"),
+    ]
+    @Namespace private var tabNS
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Section", selection: $segment) {
-                Text("Pools").tag(0)
-                Text("Disks").tag(1)
-                Text("Datasets").tag(2)
+        tabContent
+            .animation(.none, value: segment)   // instant switch, no flicker
+            .pageLoading(vm.isLoading && vm.pools.isEmpty && vm.disks.isEmpty)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    tabBar
+                    // Search bar only for Disks tab — pinned below tab bar (no layout jump)
+                    if segment == 1 {
+                        DiskSearchBar(text: $diskSearch)
+                    }
+                    Divider()
+                }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 8)
+            .navigationTitle("Storage")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                }
+            }
+            .task { await vm.refresh() }
+            .task(id: segment) {
+                if segment == 2 { await vm.refreshDatasets() }
+            }
+            .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+                Button("OK") { vm.errorMessage = nil }
+            } message: { Text(vm.errorMessage ?? "") }
+            .onChange(of: segment) { _, _ in diskSearch = "" }
+    }
 
-            Group {
-                switch segment {
-                case 0: poolsList
-                case 1: disksList
-                default: datasetsList
+    @ViewBuilder private var tabContent: some View {
+        switch segment {
+        case 0: poolsList
+        case 1: disksList
+        default: datasetsList
+        }
+    }
+
+    // MARK: - Tab Bar
+    private var tabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(tabs.indices, id: \.self) { i in
+                        Button { segment = i } label: {
+                            VStack(spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: tabs[i].icon).font(.caption2)
+                                    Text(tabs[i].label)
+                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                }
+                                .foregroundStyle(segment == i ? .primary : .secondary)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+
+                                if segment == i {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor)
+                                        .frame(height: 3)
+                                        .matchedGeometryEffect(id: "storTab", in: tabNS)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.clear).frame(height: 3)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .animation(.spring(response: 0.3, dampingFraction: 0.75), value: segment)
+            }
+            .onChange(of: segment) { _, new in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    proxy.scrollTo(new, anchor: .center)
                 }
             }
         }
-        .navigationTitle("Storage")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
-            }
-        }
-        .task(id: settings.refreshInterval) {
-            await vm.refresh()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                await vm.refresh()
-            }
-        }
-        .task(id: segment) {
-            if segment == 2 { await vm.refreshDatasets() }
-        }
-        .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
-            Button("OK") { vm.errorMessage = nil }
-        } message: { Text(vm.errorMessage ?? "") }
+        .padding(.vertical, 2)
+        .background(.bar)
     }
 
     // MARK: - Pools
@@ -86,7 +135,7 @@ struct StorageRootView: View {
                     description: Text("No disk data available."))
             } else {
                 List {
-                    if filteredDisks.isEmpty {
+                    if filteredDisks.isEmpty && !diskSearch.isEmpty {
                         ContentUnavailableView.search(text: diskSearch)
                     } else {
                         ForEach(filteredDisks) { disk in
@@ -100,10 +149,9 @@ struct StorageRootView: View {
                 .refreshable { await vm.refresh() }
             }
         }
-        .searchable(text: $diskSearch, prompt: "Search by device, model, serial, pool…")
     }
 
-    // MARK: - Datasets
+    // MARK: - Datasets (with collapse/expand)
     private var datasetsList: some View {
         Group {
             if vm.isLoading && vm.datasets.isEmpty {
@@ -114,13 +162,37 @@ struct StorageRootView: View {
             } else {
                 List {
                     ForEach(vm.datasets) { ds in
-                        DatasetTreeRow(dataset: ds, depth: 0, vm: vm)
+                        DatasetTreeRow(dataset: ds, depth: 0, vm: vm,
+                                       collapsed: $collapsedDatasets)
                     }
                 }
                 .listStyle(.insetGrouped)
                 .refreshable { await vm.refreshDatasets() }
             }
         }
+    }
+}
+
+// MARK: - Disk Search Bar
+private struct DiskSearchBar: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary).font(.subheadline)
+            TextField("Search by device, model, serial, pool…", text: $text)
+                .autocorrectionDisabled().textInputAutocapitalization(.never)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color(.systemFill), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(.bar)
     }
 }
 
@@ -155,7 +227,6 @@ struct DiskListRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status icon (color indicates health)
             Image(systemName: "internaldrive")
                 .foregroundStyle(statusColor)
                 .frame(width: 24)
@@ -163,7 +234,6 @@ struct DiskListRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(disk.id).font(.body.weight(.medium))
-                    // Pool membership badge
                     if let pool = disk.poolName {
                         Text(pool)
                             .font(.caption2.bold())
@@ -179,7 +249,6 @@ struct DiskListRow: View {
                     }
                 }
                 Text(disk.model).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                // Error / health row
                 HStack(spacing: 8) {
                     if disk.totalErrors > 0 {
                         Label("\(disk.totalErrors) error(s)", systemImage: "exclamationmark.triangle.fill")
@@ -194,7 +263,6 @@ struct DiskListRow: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 Text(formatBytes(disk.size)).font(.caption2).foregroundStyle(.secondary)
-                // SMART status
                 Label(disk.smartStatus == .passed ? "SMART OK"
                       : disk.smartStatus == .failed ? "SMART FAIL" : "—",
                       systemImage: disk.smartStatus.icon)
@@ -212,88 +280,106 @@ struct DiskListRow: View {
         return .secondary
     }
 
-    private func tempColor(_ t: Int) -> Color {
-        t > 55 ? .red : t > 45 ? .orange : .secondary
-    }
+    private func tempColor(_ t: Int) -> Color { t > 55 ? .red : t > 45 ? .orange : .secondary }
 
     private func formatBytes(_ b: Int64) -> String {
-        let tb = Double(b) / 1e12
-        let gb = Double(b) / 1e9
+        let tb = Double(b) / 1e12; let gb = Double(b) / 1e9
         if tb >= 1 { return String(format: "%.1f TB", tb) }
         return String(format: "%.0f GB", gb)
     }
 }
 
-// MARK: - Dataset Tree Row
+// MARK: - Dataset Tree Row (with collapse/expand)
 struct DatasetTreeRow: View {
     let dataset: Dataset
     let depth: Int
     let vm: StorageViewModel
+    @Binding var collapsed: Set<String>
+
+    private var isCollapsed: Bool { collapsed.contains(dataset.id) }
+    private var hasChildren: Bool { !dataset.children.isEmpty }
 
     var body: some View {
-        NavigationLink(destination: DatasetDetailView(dataset: dataset, vm: vm)) {
-            HStack(spacing: 10) {
-                if depth > 0 {
-                    Rectangle().fill(Color.clear).frame(width: CGFloat(depth) * 16)
+        // The row itself
+        HStack(spacing: 0) {
+            // Indentation for nested datasets
+            if depth > 0 {
+                Color.clear.frame(width: CGFloat(depth) * 20)
+            }
+
+            // Chevron toggle — visible only for datasets with children
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isCollapsed { collapsed.remove(dataset.id) }
+                    else           { collapsed.insert(dataset.id) }
                 }
-                // Icon with colored background pill (like iOS Files)
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(iconColor.opacity(0.15))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: iconName)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(iconColor)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(dataset.name)
-                        .font(.body.weight(depth == 0 ? .semibold : .regular))
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(formatBytes(dataset.usedBytes))
-                            .font(.caption2).foregroundStyle(.secondary)
-                        if dataset.snapshotCount > 0 {
-                            HStack(spacing: 2) {
-                                Image(systemName: "camera.fill")
-                                    .font(.caption2)
-                                Text("\(dataset.snapshotCount)")
-                                    .font(.caption2)
+            } label: {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                    .animation(.easeInOut(duration: 0.2), value: isCollapsed)
+            }
+            .buttonStyle(.plain)
+            .opacity(hasChildren ? 1 : 0)
+
+            NavigationLink(destination: DatasetDetailView(dataset: dataset, vm: vm)) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(iconColor.opacity(0.15))
+                            .frame(width: 34, height: 34)
+                        Image(systemName: iconName)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(iconColor)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(dataset.name)
+                            .font(.body.weight(depth == 0 ? .semibold : .regular))
+                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(formatBytes(dataset.usedBytes))
+                                .font(.caption2).foregroundStyle(.secondary)
+                            if dataset.snapshotCount > 0 {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "camera.fill").font(.caption2)
+                                    Text("\(dataset.snapshotCount)").font(.caption2)
+                                }
+                                .foregroundStyle(.secondary)
                             }
-                            .foregroundStyle(.secondary)
-                        }
-                        if case .encrypted(let locked) = dataset.encryption {
-                            Image(systemName: locked ? "lock.fill" : "lock.open.fill")
-                                .font(.caption2)
-                                .foregroundStyle(locked ? Color.red : Color.green)
-                        }
-                        if dataset.compressionRatio > 1.05 {
-                            Text(String(format: "%.1fx", dataset.compressionRatio))
-                                .font(.caption2)
-                                .foregroundStyle(.blue)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Color.blue.opacity(0.1), in: Capsule())
+                            if case .encrypted(let locked) = dataset.encryption {
+                                Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(locked ? Color.red : Color.green)
+                            }
+                            if dataset.compressionRatio > 1.05 {
+                                Text(String(format: "%.1fx", dataset.compressionRatio))
+                                    .font(.caption2).foregroundStyle(.blue)
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Color.blue.opacity(0.1), in: Capsule())
+                            }
                         }
                     }
+                    Spacer()
                 }
-                Spacer()
+                .padding(.vertical, 2)
             }
-            .padding(.vertical, 2)
         }
 
-        if !dataset.children.isEmpty {
+        // Children (only shown when not collapsed)
+        if hasChildren && !isCollapsed {
             ForEach(dataset.children) { child in
-                DatasetTreeRow(dataset: child, depth: depth + 1, vm: vm)
+                DatasetTreeRow(dataset: child, depth: depth + 1, vm: vm, collapsed: $collapsed)
             }
         }
     }
 
-    // Contextual icon based on dataset name / type / depth
     private var iconName: String {
         if dataset.type == .volume { return "cylinder.split.1x2.fill" }
         if depth == 0 { return "externaldrive.fill" }
         let n = dataset.name.lowercased()
         if n.contains("media") || n.contains("movie") || n.contains("film") { return "film.stack" }
-        if n.contains("tv")    || n.contains("show")  || n.contains("series") { return "tv.fill" }
+        if n.contains("tv") || n.contains("show") || n.contains("series") { return "tv.fill" }
         if n.contains("music") || n.contains("audio") { return "music.note" }
         if n.contains("photo") || n.contains("picture") || n.contains("image") { return "photo.on.rectangle.angled" }
         if n.contains("backup") || n.contains("archive") { return "archivebox.fill" }
@@ -310,7 +396,7 @@ struct DatasetTreeRow: View {
         if depth == 0 { return .gray }
         let n = dataset.name.lowercased()
         if n.contains("media") || n.contains("movie") || n.contains("film") { return .purple }
-        if n.contains("tv")    || n.contains("show")  { return .indigo }
+        if n.contains("tv") || n.contains("show") { return .indigo }
         if n.contains("music") || n.contains("audio") { return .pink }
         if n.contains("photo") || n.contains("picture") { return .green }
         if n.contains("backup") || n.contains("archive") { return .brown }
@@ -320,8 +406,7 @@ struct DatasetTreeRow: View {
     }
 
     private func formatBytes(_ b: Int64) -> String {
-        let tb = Double(b) / 1e12
-        let gb = Double(b) / 1e9
+        let tb = Double(b) / 1e12; let gb = Double(b) / 1e9
         if tb >= 1 { return String(format: "%.2f TB", tb) }
         return String(format: "%.1f GB", gb)
     }
@@ -366,8 +451,7 @@ struct DiskDetailView: View {
                 }
                 if let poh = disk.powerOnHours {
                     LabeledContent("Power-On Hours") {
-                        Text("\(poh) h")
-                            .font(.subheadline.monospacedDigit())
+                        Text("\(poh) h").font(.subheadline.monospacedDigit())
                     }
                 } else {
                     LabeledContent("Power-On Hours", value: "—")
@@ -416,21 +500,21 @@ struct DiskDetailView: View {
 
             Section {
                 Button {
-                    smartType = .short
-                    showSmartAlert = true
+                    smartType = .short; showSmartAlert = true
                 } label: {
                     Label("Run Short S.M.A.R.T. Test", systemImage: "play.circle")
                 }
                 Button {
-                    smartType = .long
-                    showSmartAlert = true
+                    smartType = .long; showSmartAlert = true
                 } label: {
                     Label("Run Long S.M.A.R.T. Test", systemImage: "play.circle.fill")
                 }
             }
         }
         .navigationTitle(disk.id)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
         .alert("Run S.M.A.R.T. Test", isPresented: $showSmartAlert) {
             Button("Run \(smartType.rawValue)") { }
             Button("Cancel", role: .cancel) { }
@@ -440,8 +524,7 @@ struct DiskDetailView: View {
     }
 
     private func formatBytes(_ b: Int64) -> String {
-        let tb = Double(b) / 1e12
-        let gb = Double(b) / 1e9
+        let tb = Double(b) / 1e12; let gb = Double(b) / 1e9
         if tb >= 1 { return String(format: "%.2f TB", tb) }
         return String(format: "%.1f GB", gb)
     }
@@ -468,7 +551,6 @@ struct DatasetDetailView: View {
     @State private var showDeleteConfirm = false
     @State private var showRollbackConfirm = false
 
-    // Snapshots belonging to this dataset
     private var mySnapshots: [Snapshot] {
         vm.snapshots.filter { $0.dataset == dataset.id }
     }
@@ -503,35 +585,25 @@ struct DatasetDetailView: View {
                 }
             }
 
-            Section {
+            Section("Actions") {
                 Button {
-                    snapshotName = ""
-                    showSnapshot = true
+                    snapshotName = ""; showSnapshot = true
                 } label: {
                     Label("Create Snapshot", systemImage: "camera")
                 }
-            } header: {
-                Text("Actions")
             }
 
-            // Snapshots
             if !mySnapshots.isEmpty {
                 Section("Snapshots (\(mySnapshots.count))") {
                     ForEach(mySnapshots) { snap in
                         SnapshotRow(snapshot: snap)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
-                                    snapshotToDelete = snap
-                                    showDeleteConfirm = true
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
+                                    snapshotToDelete = snap; showDeleteConfirm = true
+                                } label: { Label("Delete", systemImage: "trash") }
                                 Button {
-                                    snapshotToRollback = snap
-                                    showRollbackConfirm = true
-                                } label: {
-                                    Label("Rollback", systemImage: "arrow.uturn.backward.circle")
-                                }
+                                    snapshotToRollback = snap; showRollbackConfirm = true
+                                } label: { Label("Rollback", systemImage: "arrow.uturn.backward.circle") }
                                 .tint(.orange)
                             }
                     }
@@ -543,33 +615,26 @@ struct DatasetDetailView: View {
             }
         }
         .navigationTitle(dataset.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
         .task { await vm.refreshSnapshots(dataset: dataset.id) }
         .alert("Create Snapshot", isPresented: $showSnapshot) {
             TextField("Snapshot name (e.g. auto-\(Date().formatted(.dateTime.month().day())))", text: $snapshotName)
             Button("Create") {
                 let name = snapshotName.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty {
-                    Task { await vm.createSnapshot(dataset: dataset.id, name: name) }
-                }
+                if !name.isEmpty { Task { await vm.createSnapshot(dataset: dataset.id, name: name) } }
             }
             Button("Cancel", role: .cancel) { }
         }
         .alert("Delete Snapshot?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
-                if let snap = snapshotToDelete {
-                    Task { await vm.deleteSnapshot(snap) }
-                }
+                if let snap = snapshotToDelete { Task { await vm.deleteSnapshot(snap) } }
             }
             Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will permanently delete \"\(snapshotToDelete?.name ?? "")\".")
-        }
+        } message: { Text("This will permanently delete \"\(snapshotToDelete?.name ?? "")\".")  }
         .alert("Rollback to Snapshot?", isPresented: $showRollbackConfirm) {
             Button("Rollback", role: .destructive) {
-                if let snap = snapshotToRollback {
-                    Task { await vm.rollbackSnapshot(snap) }
-                }
+                if let snap = snapshotToRollback { Task { await vm.rollbackSnapshot(snap) } }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
@@ -578,8 +643,7 @@ struct DatasetDetailView: View {
     }
 
     private func formatBytes(_ b: Int64) -> String {
-        let tb = Double(b) / 1e12
-        let gb = Double(b) / 1e9
+        let tb = Double(b) / 1e12; let gb = Double(b) / 1e9
         if tb >= 1 { return String(format: "%.2f TB", tb) }
         return String(format: "%.1f GB", gb)
     }

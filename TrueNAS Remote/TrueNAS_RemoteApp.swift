@@ -24,6 +24,7 @@ struct TrueNAS_RemoteApp: App {
                 .environment(reporting)
                 .environment(system)
                 .environment(settings)
+                .tint(settings.accentColor)
         }
     }
 }

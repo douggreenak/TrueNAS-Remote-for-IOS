@@ -5,40 +5,33 @@ struct StorageView: View {
     @Environment(SettingsViewModel.self) private var settings
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if viewModel.pools.isEmpty && !viewModel.isLoading {
-                    ContentUnavailableView("No Pools",
-                                           systemImage: "externaldrive.badge.questionmark",
-                                           description: Text("Configure your server in Settings."))
-                } else {
-                    poolList
-                }
+        Group {
+            if viewModel.pools.isEmpty && !viewModel.isLoading {
+                ContentUnavailableView("No Pools",
+                                       systemImage: "externaldrive.badge.questionmark",
+                                       description: Text("Configure your server in Settings."))
+            } else {
+                poolList
             }
-            .navigationTitle("Storage")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                    } else {
-                        Button("Refresh", systemImage: "arrow.clockwise") {
-                            Task { await viewModel.refresh() }
-                        }
+        }
+        .navigationTitle("Storage")
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if viewModel.isLoading {
+                    ProgressView()
+                } else {
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task { await viewModel.refresh() }
                     }
                 }
             }
-            .task(id: settings.refreshInterval) {
-                await viewModel.refresh()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                    await viewModel.refresh()
-                }
-            }
-            .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-                Button("OK") { viewModel.errorMessage = nil }
-            } message: {
-                Text(viewModel.errorMessage ?? "")
-            }
+        }
+        .task { await viewModel.refresh() }
+        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
         }
     }
 

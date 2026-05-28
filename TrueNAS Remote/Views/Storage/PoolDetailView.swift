@@ -131,8 +131,9 @@ struct PoolDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
         .navigationTitle(pool.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
         .alert("Start Scrub?", isPresented: $showScrubAlert) {
             Button("Scrub", role: .destructive) { Task { await vm.scrub(pool: pool) } }
             Button("Cancel", role: .cancel) {}

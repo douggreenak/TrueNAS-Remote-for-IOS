@@ -144,17 +144,45 @@ extension TrueNASNetworkManager {
     }
 
     /// Returns a map of device name → temperature (°C) for all disks.
-    /// Uses disk.temperatures which accepts an empty dict and returns all available temps.
+    /// Pass an empty array to get all disks; disk.temperatures expects [[name...]] params.
     func fetchDiskTemperatures() async throws -> [String: Double] {
-        let params = try JSONSerialization.data(withJSONObject: [[String: Any]()])
+        // Correct format: params = [[]] — outer array is the params array,
+        // inner [] is the (empty) list of disk names meaning "all disks".
+        let params = try JSONSerialization.data(withJSONObject: [[]] as [[String]])
         return try await call(method: "disk.temperatures", params: params,
                               as: [String: Double].self)
     }
 
+    /// Returns a map of device name → pool name using disk.details.
+    /// This is the ONLY reliable way to get pool membership in SCALE 25.x,
+    /// because disk.query always returns pool=null and the boot-pool disks
+    /// don't appear in pool.query at all.
+    func fetchDiskPoolMap() async throws -> [String: String] {
+        struct DiskDetail: Decodable {
+            let name: String
+            let importedZpool: String?
+            let exportedZpool: String?
+        }
+        struct Details: Decodable {
+            let used: [DiskDetail]?
+            let unused: [DiskDetail]?
+        }
+        let params = try JSONSerialization.data(withJSONObject:
+            [["type": "BOTH", "join_partitions": false] as [String: Any]])
+        let details = try await call(method: "disk.details", params: params, as: Details.self)
+        var map = [String: String]()
+        let all = (details.used ?? []) + (details.unused ?? [])
+        for d in all {
+            if let pool = d.importedZpool { map[d.name] = pool }
+            else if let pool = d.exportedZpool { map[d.name] = pool + " (exported)" }
+        }
+        return map
+    }
+
+    /// Run a S.M.A.R.T. self-test on a disk.
+    /// In SCALE 25.x the method is disk.smart_test with positional args [names, type].
     func runSmartTest(diskName: String, testType: SmartTestType) async throws {
-        let params = try JSONSerialization.data(withJSONObject: [
-            ["disks": [diskName], "type": testType.rawValue] as [String: Any]
-        ])
-        try await call(method: "smart.test.manual_test", params: params)
+        let params = try JSONSerialization.data(withJSONObject: [[diskName], testType.rawValue] as [Any])
+        try await call(method: "disk.smart_test", params: params)
     }
 }

@@ -3,10 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(SettingsViewModel.self) private var viewModel
 
-    private let intervalOptions = [10, 30, 60]
-
     var body: some View {
-        // @Observable requires @Bindable for two-way binding in Form
         let vm = viewModel
         Form {
             // ── Connection ────────────────────────────────────────────
@@ -65,19 +62,78 @@ struct SettingsView: View {
                 Text("API Key Setup")
             }
 
-            // ── Preferences ───────────────────────────────────────────
+            // ── Polling ───────────────────────────────────────────────
             Section {
                 @Bindable var bvm = vm
                 Picker("Auto-Refresh", selection: $bvm.refreshInterval) {
-                    ForEach(intervalOptions, id: \.self) { s in
-                        Text("\(s)s").tag(s)
+                    ForEach(SettingsViewModel.refreshOptions, id: \.seconds) { opt in
+                        Text(opt.label).tag(opt.seconds)
                     }
                 }
-                .pickerStyle(.segmented)
             } header: {
-                Text("Preferences")
+                Text("Polling")
             } footer: {
-                Text("How often the app polls for updated data while a tab is visible.")
+                Text("How often the app re-fetches data while a tab is visible. Choose \"Never\" to refresh manually only.")
+            }
+
+            // ── Appearance ────────────────────────────────────────────
+            Section {
+                @Bindable var bvm = vm
+
+                // Accent color swatch picker
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Accent Color")
+                        .font(.subheadline)
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5),
+                        spacing: 10
+                    ) {
+                        ForEach(SettingsViewModel.AccentColorOption.allCases) { option in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    bvm.accentColorOption = option
+                                    vm.save()
+                                }
+                            } label: {
+                                ZStack {
+                                    Circle()
+                                        .fill(option.color)
+                                        .frame(width: 36, height: 36)
+                                    if bvm.accentColorOption == option {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+
+                Picker("Temperature", selection: Bindable(vm).temperatureUnit) {
+                    ForEach(SettingsViewModel.TemperatureUnit.allCases) { unit in
+                        Text(unit.label).tag(unit)
+                    }
+                }
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Accent color applies app-wide immediately. Temperature unit is used wherever temperatures are shown.")
+            }
+
+            // ── Dashboard Cards ───────────────────────────────────────
+            Section {
+                @Bindable var bvm = vm
+                Toggle("Alert Banner", isOn: $bvm.showAlertBanner)
+                Toggle("Pool Health", isOn: $bvm.showPoolHealthCard)
+                Toggle("Network Sparkline", isOn: $bvm.showNetworkCard)
+                Toggle("Temperature", isOn: $bvm.showTemperatureCard)
+            } header: {
+                Text("Dashboard Cards")
+            } footer: {
+                Text("Hide sections you don't need to keep the Dashboard focused.")
             }
 
             // ── About ─────────────────────────────────────────────────
@@ -88,12 +144,9 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Save") { vm.save() }
-                    .fontWeight(.semibold)
-            }
-        }
+        .toolbarTitleDisplayMode(.inline)
+        .listSectionSpacing(.compact)
+        .onDisappear { viewModel.save() }
     }
 
     @ViewBuilder

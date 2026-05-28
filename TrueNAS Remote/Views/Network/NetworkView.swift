@@ -7,38 +7,80 @@ struct NetworkView: View {
     @Environment(SettingsViewModel.self) private var settings
     @State private var segment = 0   // 0=Interfaces 1=Config 2=Routes
 
-    var body: some View {
-        VStack(spacing: 0) {
-            Picker("Section", selection: $segment) {
-                Text("Interfaces").tag(0)
-                Text("Config").tag(1)
-                Text("Routes").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 8)
+    private let tabs: [(label: String, icon: String)] = [
+        ("Interfaces", "network"),
+        ("Config",     "slider.horizontal.3"),
+        ("Routes",     "arrow.triangle.swap"),
+    ]
+    @Namespace private var tabNS
 
-            Group {
-                switch segment {
-                case 0: interfacesList
-                case 1: configView
-                default: routesList
+    var body: some View {
+        tabContent
+            .animation(.none, value: segment)   // instant switch, no flicker
+            .pageLoading(vm.isLoading && vm.interfaces.isEmpty)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    tabBar
+                    Divider()
+                }
+            }
+            .navigationTitle("Network")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                }
+            }
+            .task { await vm.refresh() }
+    }
+
+    @ViewBuilder private var tabContent: some View {
+        switch segment {
+        case 0: interfacesList
+        case 1: configView
+        default: routesList
+        }
+    }
+
+    private var tabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(tabs.indices, id: \.self) { i in
+                        Button { segment = i } label: {
+                            VStack(spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: tabs[i].icon).font(.caption2)
+                                    Text(tabs[i].label)
+                                        .font(.subheadline.weight(segment == i ? .semibold : .regular))
+                                }
+                                .foregroundStyle(segment == i ? .primary : .secondary)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+
+                                if segment == i {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor)
+                                        .frame(height: 3)
+                                        .matchedGeometryEffect(id: "netTab", in: tabNS)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.clear).frame(height: 3)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .animation(.spring(response: 0.3, dampingFraction: 0.75), value: segment)
+            }
+            .onChange(of: segment) { _, new in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    proxy.scrollTo(new, anchor: .center)
                 }
             }
         }
-        .navigationTitle("Network")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if vm.isLoading { ProgressView().controlSize(.small) }
-            }
-        }
-        .task(id: settings.refreshInterval) {
-            await vm.refresh()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                await vm.refresh()
-            }
-        }
+        .padding(.vertical, 2)
+        .background(.bar)
     }
 
     // MARK: - Interfaces
@@ -65,6 +107,37 @@ struct NetworkView: View {
     // MARK: - Global Config
     private var configView: some View {
         List {
+            // Server addresses: IP + hostname/domain from live interface data
+            let activeIfaces = vm.interfaces.filter { $0.linkState && !$0.ipv4Addresses.isEmpty }
+            if !activeIfaces.isEmpty {
+                Section("Server Addresses") {
+                    ForEach(activeIfaces) { iface in
+                        ForEach(iface.ipv4Addresses, id: \.self) { ip in
+                            let fqdn = vm.networkConfig.domain.isEmpty
+                                ? vm.networkConfig.hostname
+                                : "\(vm.networkConfig.hostname).\(vm.networkConfig.domain)"
+                            HStack(spacing: 10) {
+                                Image(systemName: "server.rack")
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 22)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(ip)
+                                        .font(.body.monospaced())
+                                        .textSelection(.enabled)
+                                    Text(fqdn)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                Spacer()
+                                Text(iface.name)
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+
             Section("Hostname") {
                 LabeledContent("Hostname", value: vm.networkConfig.hostname)
                 if vm.networkConfig.domain != "—" && !vm.networkConfig.domain.isEmpty {
@@ -295,7 +368,9 @@ struct InterfaceDetailView: View {
             }
         }
         .navigationTitle(interface.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
     }
 
     private func formatBytes(_ b: Int64) -> String {

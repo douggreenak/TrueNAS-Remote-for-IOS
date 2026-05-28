@@ -14,19 +14,24 @@ class StorageViewModel {
     private let network = TrueNASNetworkManager.shared
 
     func refresh() async {
+        guard !isLoading else { return }
         isLoading = true; errorMessage = nil
         defer { isLoading = false }
         do {
-            async let p = network.fetchPools()
-            async let d = network.fetchDisks()
-            async let t = network.fetchDiskTemperatures()
+            // Fetch pools, raw disk list, temperatures, and pool map in parallel.
+            // disk.details gives the authoritative pool-per-disk mapping including
+            // the boot-pool (sda/sdf) and single-disk VDEVs that pool.query misses.
+            async let p    = network.fetchPools()
+            async let d    = network.fetchDisks()
+            async let t    = network.fetchDiskTemperatures()
+            async let pmap = network.fetchDiskPoolMap()
 
             var fetchedPools = try await p
             let fetchedDisks = try await d
-            // Temperatures are best-effort — never fail the whole refresh if unavailable.
-            let temperatures = (try? await t) ?? [:]
+            let temperatures = (try? await t)    ?? [:]
+            let poolByDisk   = (try? await pmap) ?? [:]
 
-            // Enrich each pool's disk stubs with real metadata from disk.query + temperatures.
+            // Enrich each pool's disk stubs with real metadata + temperatures.
             let diskMap = Dictionary(uniqueKeysWithValues: fetchedDisks.map { ($0.id, $0) })
 
             for i in fetchedPools.indices {
@@ -39,16 +44,9 @@ class StorageViewModel {
                 }
             }
 
-            // Derive pool membership from pool topology
-            // (disk.query returns pool=null in TrueNAS SCALE 25.x)
-            var poolByDisk = [String: String]()
-            for pool in fetchedPools {
-                for disk in pool.disks { poolByDisk[disk.id] = pool.name }
-            }
-
             pools = fetchedPools
 
-            // Build the full disk list with pool names and temperatures applied.
+            // Build full disk list using disk.details pool map (authoritative).
             disks = fetchedDisks.map { disk in
                 let poolName = poolByDisk[disk.id]
                 let temp     = temperatures[disk.id].map { Int($0) }
@@ -81,6 +79,15 @@ class StorageViewModel {
             checksumErrors: stub.checksumErrors,
             smartResults:   real.smartResults
         )
+    }
+
+    /// Lightweight refresh — fetches only pools (skips disks/temperatures).
+    /// Used by the Dashboard pool-health section so it can show pool status
+    /// without triggering the full disk + temperature fetch.
+    func refreshPoolsOnly() async {
+        guard pools.isEmpty else { return }  // already have data, skip
+        do { pools = try await network.fetchPools() }
+        catch { /* silent — dashboard shows "Loading" until full refresh */ }
     }
 
     func refreshDatasets(pool: String? = nil) async {
